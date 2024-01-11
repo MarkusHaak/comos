@@ -1,2 +1,2 @@
-# comos
+# CoMoS
 Complete Motif Search 
