@@ -82,6 +82,11 @@ def parse_args():
         action='store_true',
         help='Create and display a plots.'
     )
+    io_grp.add_argument(
+        '--cache',
+        default='tmp',
+        help='Directory used for storing cache files.'
+    )
 
     motif_grp = parser.add_argument_group('Motif Options')
     motif_grp.add_argument(
@@ -148,7 +153,7 @@ def parse_diff_file(fp, contig_id):
     df = df.loc[df.contig == contig_id]
     return df
 
-def parse_largest_contig(fp):
+def parse_largest_contig(fp, cache_dir='tmp'):
     n_largest = 0
     contig_id = None
     n = 0
@@ -158,7 +163,7 @@ def parse_largest_contig(fp):
             contig_id = record.id
             n_largest = len(record.seq)
             seq = record.seq
-            sa = suffix_array.get_suffix_array(record.id, record.seq)
+            sa = suffix_array.get_suffix_array(record.id, record.seq, cache_dir=cache_dir)
     return seq, sa, contig_id, n
 
 def compute_expsumlogp(df, seq):
@@ -493,7 +498,10 @@ def reduce_motifs(d, sa, max_motif_len, mu, sigma, fwd_expsumlogp, rev_expsumlog
     return d.sort_values('stddevs').reset_index(drop=True)
 
 def main(args):
-    seq, sa, contig_id, n_contigs = parse_largest_contig(args.genome)
+    tstart = time.time()
+    seq, sa, contig_id, n_contigs = parse_largest_contig(args.genome, args.cache)
+    tstop = time.time()
+    logging.getLogger('comos').info(f"{'Loaded' if args.cache else 'Created'} Index in {tstop - tstart:.2f} seconds")
     if n_contigs > 1: # TODO: analyze all contigs
         logging.getLogger('comos').warning(
             f"Dataset contains {n_contigs} contig(s), "\
@@ -563,5 +571,7 @@ def main(args):
 if __name__ == '__main__':
     args = parse_args()
     level = logging.DEBUG if args.debug else logging.INFO
-    logging.basicConfig(level=level, format=f'%(levelname)s : %(message)s')
+    logging.basicConfig(level=level, 
+                        format=f'%(levelname)s [%(asctime)s] : %(message)s',
+                        datefmt='%H:%M:%S')
     main(args)
