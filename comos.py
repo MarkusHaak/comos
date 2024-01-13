@@ -15,13 +15,15 @@ import time
 import argparse
 import logging
 import suffix_array
+import pickle
+import warnings
 
 import matplotlib
 matplotlib.use('TkAgg')
 
 class ArgHelpFormatter(argparse.HelpFormatter):
     '''
-    Formatter properly adding default values to help texts.
+    Formatter that properly adds default values to help texts.
     '''
     def __init__(self, prog):
         super().__init__(prog)
@@ -73,8 +75,13 @@ def parse_args():
         help='RDS Rdata file containing the sample differences.')
     io_grp.add_argument(
         '--out', '-o', 
-        default='cosmos_output.csv',
-        help='CSV filename to store the output in.')
+        default='./cosmos_output',
+        help='Folder for the output files.')
+    io_grp.add_argument(
+        '--plot', '-p',
+        action='store_true',
+        help='Create and display a plots.'
+    )
 
     motif_grp = parser.add_argument_group('Motif Options')
     motif_grp.add_argument(
@@ -102,6 +109,20 @@ def parse_args():
         help='Maximum gap size in TypeI motifs.'
     )
 
+    hyper_grp = parser.add_argument_group('Hyperparameters')
+    hyper_grp.add_argument(
+        '--selection_thr',
+        type=float,
+        default=5.0,
+        help='Minimum diversion in number of std.dev. from Null-model required for a motif to get selected.' 
+    )
+    hyper_grp.add_argument(
+        '--ambiguity_thr',
+        type=float,
+        default=2.0,
+        help='Minimum diversion in number of std.dev. diversion from Null-model required for an extended motif.' 
+    )
+
     parser.add_argument('--debug', action='store_true')
     args = parser.parse_args()
 
@@ -111,6 +132,8 @@ def parse_args():
     if not os.path.exists(args.rds):
         logging.getLogger('comos').error(f"Input file {args.rds} does not exist.")
         exit(1)
+    if not os.path.exists(args.out):
+        os.makedirs(args.out)
     args.genome = os.path.abspath(args.genome)
     args.rds = os.path.abspath(args.rds)
 
@@ -206,7 +229,7 @@ def get_seq_index_combinations(k_min, k_max, min_gap, max_gap, bases, blur):
                         seq_index_combinations[seq_] = indexes_
     return seq_index_combinations
 
-def plot_diffs_with_complementary(motif, sa, fwd_diff, rev_diff, ymax=np.inf, offset=3):
+def plot_diffs_with_complementary(motif, sa, fwd_diff, rev_diff, ymax=np.inf, offset=3, savepath=None):
     mlen = len(motif)
     positions = list(range(-offset, mlen+offset))
     ind_fwd, ind_rev = suffix_array.find_motif(motif, sa)
@@ -247,9 +270,228 @@ def plot_diffs_with_complementary(motif, sa, fwd_diff, rev_diff, ymax=np.inf, of
     ax2.invert_yaxis()
     ax1.spines[['right', 'top']].set_visible(False)
     ax2.spines[['right', 'bottom']].set_visible(False)
-    plt.show()
+    if savepath:
+        plt.savefig(savepath, dpi=300)
+    else:
+        plt.show()
 
+from scipy.optimize import curve_fit
+def func(x, a, b):
+    # x, a, b, c
+    #return a * np.exp(-b * x) + c # Exponential
     
+    # x, a, b, c, d, e
+    #return a * np.exp(-b * x) + c + d * np.log(e * x)
+    #return a * np.exp(-b * x) + c + (d * x) / (e + x)
+    #return a * np.exp(-b * x) + c + d * np.power(x, e)
+    
+    # x, a, b
+    with warnings.catch_warnings():
+        warnings.filterwarnings('ignore', r'divide by zero encountered in power')
+        return a * np.power(x, b) # Power Curve
+    #return (a * x) / (b + x) # Plateau Curve
+
+    #return (1 / (1 + np.exp(-d*(x + f)))) * (a * np.exp(-b * x) + c) + (1 - 1 / (1 + np.exp(-d*(x + f)))) * (g * np.exp(-h * x) + i)
+
+
+def normal_approx(d):
+    mu = []
+    sigma = []
+    window = lambda x : 20 + x
+    #N = np.unique(np.linspace(1,d.N.max(),1000).astype(int))
+    N = np.unique(np.concatenate([np.geomspace(1,d.N.max(),500).astype(int), 
+                                  np.linspace(1,d.N.max(),1000).astype(int)]))
+    for n in N:
+        sel = (d.N >= n - window(n)//2) & (d.N <= n + window(n)//2)
+        sigma.append(d.loc[sel, 'val'].std())
+        mu.append(d.loc[sel, 'val'].mean())
+    
+    #fig,(ax1,ax2) = plt.subplots(2,1)
+    #try:
+    #    popt, pcov = curve_fit(func, N, mu)
+    #    #print(popt)
+    #    p_mu = lambda x : func(x, *popt)
+    #    ax1.scatter(N,mu,s=5)
+    #    ax1.plot(np.linspace(0,d.N.max(),1000), p_mu(np.linspace(0,d.N.max(),1000)))
+    #except:
+    #    pass
+    #try:
+    #    popt2, pcov = curve_fit(func, N, sigma)
+    #    #print(popt2)
+    #    p_sigma = lambda x : func(x, *popt2)
+    #    ax2.scatter(N,sigma,s=5)
+    #    ax2.plot(np.linspace(0,d.N.max(),1000), p_sigma(np.linspace(0,d.N.max(),1000)))
+    #except:
+    #    pass
+    #plt.show()
+
+    popt, pcov = curve_fit(func, N, mu)
+    p_mu = lambda x : func(x, *popt)
+    popt2, pcov = curve_fit(func, N, sigma)
+    p_sigma = lambda x : func(x, *popt2)
+    return p_mu(np.array(range(0,d.N.max()+1))), p_sigma(np.array(range(0,d.N.max()+1))) # TODO: suppress warnings?
+
+def plot_motif_scores(results, mu, sigma, thr=6., savepath=None):
+    fig,ax = plt.subplots(figsize=(6,6))
+    ax.scatter(results.N,results.val,s=1,alpha=0.25, color='black')
+    X = np.linspace(0,5000, 1000)
+    ax.plot(X, mu[X.astype(int)], color='C0')
+    ax.plot(X, mu[X.astype(int)] + thr*sigma[X.astype(int)], color='C0', linestyle=':')
+    ax.plot(X, mu[X.astype(int)] - thr*sigma[X.astype(int)], color='C0', linestyle=':')
+    ax.grid()
+    ax.set(ylim=(-0.0005, ax.get_ylim()[1]), xlim=(-50,5000),
+        xlabel="# motif sites", ylabel="10**(sumlog p)")
+    if savepath:
+        plt.savefig(savepath, dpi=300)
+    else:
+        plt.show()
+
+def combine_IUPAC(m1, m2):
+    assert len(m1) == len(m2)
+    return "".join([IUPAC_TO_IUPAC[b1][b2] for (b1,b2) in zip(m1, m2)])
+
+def combine_motifs(m1, m2):
+    if len(m1) < len(m2):
+        mshort = m1
+        mlong = m2
+    else:
+        mshort = m2
+        mlong = m1
+    diff = len(mlong) - len(mshort)
+    
+    combined_motifs = []
+    for shift in range(-1,diff+2):
+        if shift < 0:
+            mlong_ = "N"*(-shift) + mlong
+            mshort_ = mshort + "N"*(diff-shift)
+        elif shift > diff:
+            mlong_ = mlong + "N"*(shift - diff)
+            mshort_ = "N"*(diff + (shift - diff)) + mshort
+        else:
+            mlong_ = mlong
+            mshort_ = "N"*shift + mshort + "N"*(diff - shift)
+        combined = combine_IUPAC(mshort_, mlong_).strip('N')
+        if combined:
+            combined_motifs.append(combined)
+    return combined_motifs
+
+def test_ambiguous(motif, poi, sa, max_motif_len, mu, sigma, fwd_expsumlogp, rev_expsumlogp, ambiguity_thr, min_N=50):
+    motif_exp = ["N"] + list(motif) + ["N"]
+    to_test = []
+    pois = []
+    for i in range(len(motif_exp)):
+        if motif_exp[i] == 'N':
+            for b in "ACTG":
+                testcase = "".join(motif_exp[:i] + [b] + motif_exp[i+1:]).strip('N')
+                to_test.append(testcase)
+                if i == 0:
+                    pois.append(poi+1)
+                else:
+                    pois.append(poi)
+    pois = np.array(pois)
+    means, Ns = suffix_array.motif_means(to_test, max_motif_len+2, fwd_expsumlogp, rev_expsumlogp, sa)
+    Ns = Ns[range(Ns.shape[0]), pois]
+    means = means[range(Ns.shape[0]), pois]
+    sel = Ns > min_N
+    Ns = Ns[sel]
+    means = means[sel]
+    stddevs = (means - mu[Ns]) / sigma[Ns]
+    return np.all(stddevs < ambiguity_thr)
+
+def get_pois(motif):
+    pois = []
+    for i in range(len(motif)):
+        if motif[i] in "CA":
+            pois.append(i)
+    return pois
+
+def reduce_motifs(d, sa, max_motif_len, mu, sigma, fwd_expsumlogp, rev_expsumlogp, thr, ambiguity_thr=-2):
+    d = d.copy().sort_values(['N','stddevs'], ascending=[False,True])
+    # initial filtering
+    if ambiguity_thr is not None:
+        d['pass'] = d.apply(lambda row: test_ambiguous(row.motif, row.poi, sa, max_motif_len, mu, sigma, fwd_expsumlogp, rev_expsumlogp, ambiguity_thr), axis=1)
+        for i,row in d.loc[d['pass'] == False].iterrows():
+            logging.getLogger('comos').debug(f"excluded {row.motif}:{row.poi} ({row.N}, {row.stddevs:.2f}) : did not pass ambiguity filter")
+        d = d.loc[d['pass']].drop(['pass'], axis=1)
+    
+    changed = True
+    tested = set()
+    while changed == True:
+        changed = False
+        for i in range(0,len(d)):
+            #if 'N' in d.iloc[i].motif:
+            #    continue
+            for j in range(i+1,len(d)):
+                if ((d.iloc[i].motif, d.iloc[i].poi), (d.iloc[j].motif, d.iloc[j].poi)) in tested:
+                    continue
+                tested.add(((d.iloc[i].motif, d.iloc[i].poi), (d.iloc[j].motif, d.iloc[j].poi)))
+                #if 'N' in d.iloc[j].motif:
+                #    continue
+                combined_motifs = combine_motifs(d.iloc[i].motif, d.iloc[j].motif)
+                if d.iloc[i].motif in combined_motifs[1:-1]:
+                    logging.getLogger('comos').debug(f"dropped {d.iloc[j].motif}:{d.iloc[j].poi} ({d.iloc[j].N}, {d.iloc[j].stddevs:.2f}), covered by {d.iloc[i].motif}:{d.iloc[i].poi} ({d.iloc[i].N}, {d.iloc[i].stddevs:.2f})")
+                    d = d.drop(d.index[j])
+                    changed = True
+                    break
+                if d.iloc[j].motif in combined_motifs[1:-1]:
+                    logging.getLogger('comos').debug(f"dropped {d.iloc[i].motif}:{d.iloc[i].poi} ({d.iloc[i].N}, {d.iloc[i].stddevs:.2f}), covered by {d.iloc[j].motif}:{d.iloc[j].poi} ({d.iloc[j].N}, {d.iloc[j].stddevs:.2f})")
+                    d = d.drop(d.index[i])
+                    changed = True
+                    break
+
+                means, Ns = suffix_array.motif_means(combined_motifs, max_motif_len, fwd_expsumlogp, rev_expsumlogp, sa)
+                #calculate number of std. deviations
+                best = (None, None, np.inf, 0, np.inf)
+                for (m,motif) in enumerate(combined_motifs):
+                    for poi in get_pois(motif):
+                        N = min(Ns[m][poi], len(mu)-1)
+                        stddevs = (means[m][poi] - mu[N]) / sigma[N]
+                        if stddevs < best[4]:
+                            if stddevs < thr:
+                                if ambiguity_thr is not None:
+                                    test_passed = test_ambiguous(motif, poi, sa, max_motif_len, mu, sigma, fwd_expsumlogp, rev_expsumlogp, ambiguity_thr)
+                                else:
+                                    test_passed = True
+                                if test_passed:
+                                    best = (motif, poi, means[m][poi], Ns[m][poi], stddevs)
+                #logging.getLogger('comos').debug("comparison:", best[4], max(d.iloc[i].stddevs, d.iloc[j].stddevs))
+                if best[4] < thr:
+                    logging.getLogger('comos').debug(f"combined {d.iloc[i].motif}:{d.iloc[i].poi} ({d.iloc[i].N}, {d.iloc[i].stddevs:.2f}) and {d.iloc[j].motif}:{d.iloc[j].poi} ({d.iloc[j].N}, {d.iloc[j].stddevs:.2f}) to {best[0]}:{best[1]} ({best[3]}, {best[4]:.2f})")
+                    d.iloc[i] = pd.Series(best)
+                    d = d.drop(d.index[j])
+                    changed = True
+                    break
+            if changed:
+                break
+    # remove reverse complements of non-palindromic motifs
+    # keep the ones with better score
+    d['representative'] = d['motif']
+    changed = True
+    tested = set()
+    while changed == True:
+        changed = False
+        for i in range(0,len(d)):
+            for j in range(i+1,len(d)):
+                if (d.iloc[i].motif, d.iloc[j].motif) in tested:
+                    continue
+                tested.add((d.iloc[i].motif, d.iloc[j].motif))
+                if d.iloc[i].motif == reverse_complement(d.iloc[j].motif):
+                    if d.iloc[i].stddevs >= d.iloc[j].stddevs:
+                        logging.getLogger('comos').debug(f"dropped {d.iloc[j].motif}:{d.iloc[j].poi} ({d.iloc[j].N}, {d.iloc[j].stddevs:.2f}), reverse complement of {d.iloc[i].motif}:{d.iloc[i].poi} ({d.iloc[i].N}, {d.iloc[i].stddevs:.2f})")
+                        #d = d.drop(d.index[j])
+                        d.iloc[j, d.columns.get_loc('representative')] = d.iloc[i].motif
+                        changed = True
+                        break
+                    else:
+                        logging.getLogger('comos').debug(f"dropped {d.iloc[i].motif}:{d.iloc[i].poi} ({d.iloc[i].N}, {d.iloc[i].stddevs:.2f}), reverse complement of {d.iloc[j].motif}:{d.iloc[j].poi} ({d.iloc[j].N}, {d.iloc[j].stddevs:.2f})")
+                        #d = d.drop(d.index[i])
+                        d.iloc[i, d.columns.get_loc('representative')] = d.iloc[j].motif
+                        changed = True
+                        break
+            if changed:
+                break
+    return d.sort_values('stddevs').reset_index(drop=True)
+
 def main(args):
     seq, sa, contig_id, n_contigs = parse_largest_contig(args.genome)
     if n_contigs > 1: # TODO: analyze all contigs
@@ -258,24 +500,65 @@ def main(args):
             f"only {contig_id} of length {len(seq)} is analyzed")
     df = parse_diff_file(args.rds, contig_id)
     fwd_expsumlogp, rev_expsumlogp = compute_expsumlogp(df, seq)
-    #fwd_diff, rev_diff = compute_diffs(df, seq)
-    #plot_diffs_with_complementary("GAGNNNNNTGA", sa, fwd_diff, rev_diff, ymax=6., offset=3)
     
     motifs = get_seq_index_combinations(args.min_k, args.max_k, args.min_g, args.max_g, ['A', 'C'], 0)
     all_motifs = list(motifs.keys())
     logging.getLogger('comos').info(f"Analyzing {len(motifs)} motifs and "\
         f"{sum([len(motifs[i]) for i in motifs])} indices within these motifs")
     # do computation
+    #if os.path.exists("dev.pkl"):
+    #    with open("dev.pkl", 'rb') as f:
+    #        means, means_counts = pickle.load(f)
+    #else:
     tstart = time.time()
-    means, means_counts = suffix_array.motif_means(all_motifs, args.max_k+args.max_g, fwd_expsumlogp, rev_expsumlogp, sa)
+    means, means_counts = suffix_array.motif_means(all_motifs, args.max_k + args.max_g, fwd_expsumlogp, rev_expsumlogp, sa)
     tstop = time.time()
     logging.getLogger('comos').info(f"Computed motif scores in {tstop - tstart:.2f} seconds")
-    # retrieve results
-    results = {}
-    for i,motif in enumerate(all_motifs):
-        results[motif] = {}
-        for poi in motifs[motif]:
-            results[motif][poi] = means[i][poi], means_counts[i][poi]
+    #    with open("dev.pkl", 'wb') as f:
+    #        pickle.dump((means, means_counts), f)
+
+    with warnings.catch_warnings():
+        warnings.filterwarnings('ignore', r'All-NaN slice encountered')
+        best = np.nanmin(means, axis=1)
+    mask = ~np.isnan(best)
+    results = pd.DataFrame(best, columns=['val'], index=all_motifs)[mask]
+    results['poi'] =  np.nanargmin(means[mask], axis=1)
+    results['N'] = means_counts[mask][range(results['poi'].shape[0]), results['poi']]
+    results = results[['poi', 'val', 'N']] # change order of columns to match that in function reduce_motifs
+
+    tstart = time.time()
+    mu, sigma = normal_approx(results)
+    tstop = time.time()
+    logging.getLogger('comos').info(f"Performed normal approximation in {tstop - tstart:.2f} seconds")
+
+    results['stddevs'] = (results.val - mu[results.N]) / sigma[results.N]
+
+    if args.plot:
+        plot_motif_scores(results, mu, sigma, thr=args.selection_thr, savepath=os.path.join(args.out, f"scores_scatterplot.png"))
+
+    sel = (results.stddevs <= -args.selection_thr)
+    logging.getLogger('comos').info(f"Selected {sel.sum()} motifs based on selection threshold of {args.selection_thr} std. deviations:")
+    print(results.loc[sel])
+
+    tstart = time.time()
+    motifs_found = reduce_motifs(results.loc[sel].reset_index().rename(columns={'index':'motif'}), 
+                                 sa, args.max_k + args.max_g, 
+                                 mu, sigma, 
+                                 fwd_expsumlogp, rev_expsumlogp,
+                                 thr=-args.selection_thr, ambiguity_thr=-args.ambiguity_thr)
+    tstop = time.time()
+    logging.getLogger('comos').info(f"Performed motif reduction in {tstop - tstart:.2f} seconds")
+    motifs_found = motifs_found[['motif', 'poi', 'representative', 'val', 'N', 'stddevs']]
+    logging.getLogger('comos').info(f"Reduced to {len(motifs_found)} motifs in {len(motifs_found.representative.unique())} MTase groups:")
+    print(motifs_found.set_index(['representative', 'motif']))
+    
+    if args.plot:
+        fwd_diff, rev_diff = compute_diffs(df, seq)
+        for r,row in motifs_found.loc[motifs_found.motif == motifs_found.representative].iterrows():
+            plot_diffs_with_complementary(row.motif, sa, fwd_diff, rev_diff, savepath=os.path.join(args.out, f"{row.motif}_{row.poi}.png"))
+    
+    motifs_found.to_csv(os.path.join(args.out, f"results.csv"))
+    
 
 if __name__ == '__main__':
     args = parse_args()
