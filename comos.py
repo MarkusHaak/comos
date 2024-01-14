@@ -1,26 +1,22 @@
-import pyreadr
-import pandas as pd
-import numpy as np
-from matplotlib import pyplot as plt
-from Bio import SeqIO
-import sys
-import itertools
-from tqdm import tqdm
-import random
-import re
-import scipy
-import pickle
 import os
-import time
+import warnings
 import argparse
 import logging
-import suffix_array
+import itertools
 import pickle
-import warnings
+import time
 
+import pandas as pd
+import numpy as np
+import matplotlib
+import pyreadr
+from matplotlib import pyplot as plt
+from Bio import SeqIO
+from scipy.optimize import curve_fit
 from scipy.stats import norm
 
-import matplotlib
+import suffix_array
+
 matplotlib.use('TkAgg')
 
 class ArgHelpFormatter(argparse.HelpFormatter):
@@ -128,6 +124,12 @@ def parse_args():
         type=float,
         default=2.0,
         help='Minimum diversion in number of std.dev. diversion from Null-model required for an extended motif.' 
+    )
+    hyper_grp.add_argument(
+        '--analysis-mode',
+        type=float,
+        default=2.0,
+        help='Analyze influence of selection threshold on resulting motifs.' 
     )
 
     parser.add_argument('--debug', action='store_true')
@@ -282,7 +284,6 @@ def plot_diffs_with_complementary(motif, sa, fwd_diff, rev_diff, ymax=np.inf, of
     else:
         plt.show()
 
-from scipy.optimize import curve_fit
 def func(x, a, b):
     # x, a, b, c
     #return a * np.exp(-b * x) + c # Exponential
@@ -412,7 +413,16 @@ def get_pois(motif):
             pois.append(i)
     return pois
 
-def reduce_motifs(d, sa, max_motif_len, mu, sigma, fwd_expsumlogp, rev_expsumlogp, thr, ambiguity_thr=-2):
+def get_num_absorbed(motif, absorbed):
+    if motif not in absorbed:
+        return 1
+    else:
+        n = 0
+        for m, stddevs in absorbed[motif]:
+            n += get_num_absorbed(m, absorbed)
+        return n
+
+def reduce_motifs(d, sa, max_motif_len, mu, sigma, fwd_expsumlogp, rev_expsumlogp, thr, ambiguity_thr=-2, absorbed=None):
     d = d.copy().sort_values(['N','stddevs'], ascending=[False,True])
     # initial filtering
     if ambiguity_thr is not None:
@@ -423,25 +433,37 @@ def reduce_motifs(d, sa, max_motif_len, mu, sigma, fwd_expsumlogp, rev_expsumlog
     
     changed = True
     tested = set()
+    if absorbed is None:
+        absorbed = {}
     while changed == True:
         changed = False
         for i in range(0,len(d)):
-            #if 'N' in d.iloc[i].motif:
-            #    continue
             for j in range(i+1,len(d)):
                 if ((d.iloc[i].motif, d.iloc[i].poi), (d.iloc[j].motif, d.iloc[j].poi)) in tested:
                     continue
                 tested.add(((d.iloc[i].motif, d.iloc[i].poi), (d.iloc[j].motif, d.iloc[j].poi)))
-                #if 'N' in d.iloc[j].motif:
-                #    continue
                 combined_motifs = combine_motifs(d.iloc[i].motif, d.iloc[j].motif)
                 if d.iloc[i].motif in combined_motifs[1:-1]:
                     logging.getLogger('comos').debug(f"dropped {d.iloc[j].motif}:{d.iloc[j].poi} ({d.iloc[j].N}, {d.iloc[j].stddevs:.2f}), covered by {d.iloc[i].motif}:{d.iloc[i].poi} ({d.iloc[i].N}, {d.iloc[i].stddevs:.2f})")
+                    # note which motifs get absorbed
+                    if d.iloc[i].motif not in absorbed:
+                        absorbed[d.iloc[i].motif] = []
+                    #if d.iloc[j].motif in absorbed:
+                    #    absorbed[d.iloc[i].motif].extend(absorbed[d.iloc[j].motif])
+                    absorbed[d.iloc[i].motif].append((d.iloc[j].motif, d.iloc[j].stddevs))
+                    # drop entry
                     d = d.drop(d.index[j])
                     changed = True
                     break
                 if d.iloc[j].motif in combined_motifs[1:-1]:
                     logging.getLogger('comos').debug(f"dropped {d.iloc[i].motif}:{d.iloc[i].poi} ({d.iloc[i].N}, {d.iloc[i].stddevs:.2f}), covered by {d.iloc[j].motif}:{d.iloc[j].poi} ({d.iloc[j].N}, {d.iloc[j].stddevs:.2f})")
+                    # note which motifs get absorbed
+                    if d.iloc[j].motif not in absorbed:
+                        absorbed[d.iloc[j].motif] = []
+                    #if d.iloc[i].motif in absorbed:
+                    #    absorbed[d.iloc[j].motif].extend(absorbed[d.iloc[i].motif])
+                    absorbed[d.iloc[j].motif].append((d.iloc[i].motif, d.iloc[i].stddevs))
+                    # drop entry
                     d = d.drop(d.index[i])
                     changed = True
                     break
@@ -463,8 +485,17 @@ def reduce_motifs(d, sa, max_motif_len, mu, sigma, fwd_expsumlogp, rev_expsumlog
                                     best = (motif, poi, means[m][poi], Ns[m][poi], stddevs, norm().cdf(stddevs))
                 #logging.getLogger('comos').debug("comparison:", best[4], max(d.iloc[i].stddevs, d.iloc[j].stddevs))
                 if best[4] < thr:
+                    new_motif = pd.Series(best, index=d.columns)
                     logging.getLogger('comos').debug(f"combined {d.iloc[i].motif}:{d.iloc[i].poi} ({d.iloc[i].N}, {d.iloc[i].stddevs:.2f}) and {d.iloc[j].motif}:{d.iloc[j].poi} ({d.iloc[j].N}, {d.iloc[j].stddevs:.2f}) to {best[0]}:{best[1]} ({best[3]}, {best[4]:.2f})")
-                    d.iloc[i] = pd.Series(best)
+                    # note which motifs get absorbed
+                    #if d.iloc[i].motif in absorbed:
+                    #    absorbed[new_motif.motif].extend(absorbed[d.iloc[i].motif])
+                    #if d.iloc[j].motif in absorbed:
+                    #    absorbed[new_motif.motif].extend(absorbed[d.iloc[j].motif])
+                    absorbed[new_motif.motif] = [(d.iloc[i].motif, d.iloc[i].stddevs), 
+                                                 (d.iloc[j].motif, d.iloc[j].stddevs)]
+                    # drop / replace entries
+                    d.iloc[i] = new_motif
                     d = d.drop(d.index[j])
                     changed = True
                     break
@@ -497,7 +528,7 @@ def reduce_motifs(d, sa, max_motif_len, mu, sigma, fwd_expsumlogp, rev_expsumlog
                         break
             if changed:
                 break
-    return d.sort_values('stddevs').reset_index(drop=True)
+    return d.sort_values('stddevs').reset_index(drop=True), absorbed
 
 def main(args):
     tstart = time.time()
@@ -563,14 +594,15 @@ def main(args):
     print(results.loc[sel])
 
     tstart = time.time()
-    motifs_found = reduce_motifs(results.loc[sel].reset_index().rename(columns={'index':'motif'}), 
+    motifs_found, absorbed = reduce_motifs(results.loc[sel].reset_index().rename(columns={'index':'motif'}), 
                                  sa, args.max_k + args.max_g, 
                                  mu, sigma, 
                                  fwd_expsumlogp, rev_expsumlogp,
                                  thr=-args.selection_thr, ambiguity_thr=-args.ambiguity_thr)
     tstop = time.time()
     logging.getLogger('comos').info(f"Performed motif reduction in {tstop - tstart:.2f} seconds")
-    motifs_found = motifs_found[['motif', 'poi', 'representative', 'val', 'N', 'stddevs', 'p-value']]
+    motifs_found['n_canonical'] = motifs_found['motif'].apply(get_num_absorbed, absorbed=absorbed)
+    motifs_found = motifs_found[['motif', 'poi', 'representative', 'val', 'N', 'stddevs', 'p-value', 'n_canonical']]
     logging.getLogger('comos').info(f"Reduced to {len(motifs_found)} motifs in {len(motifs_found.representative.unique())} MTase groups:")
     print(motifs_found.set_index(['representative', 'motif']))
     
