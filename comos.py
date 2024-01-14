@@ -18,6 +18,8 @@ import suffix_array
 import pickle
 import warnings
 
+from scipy.stats import norm
+
 import matplotlib
 matplotlib.use('TkAgg')
 
@@ -118,7 +120,7 @@ def parse_args():
     hyper_grp.add_argument(
         '--selection_thr',
         type=float,
-        default=5.0,
+        default=4.5,
         help='Minimum diversion in number of std.dev. from Null-model required for a motif to get selected.' 
     )
     hyper_grp.add_argument(
@@ -394,7 +396,7 @@ def test_ambiguous(motif, poi, sa, max_motif_len, mu, sigma, fwd_expsumlogp, rev
                 else:
                     pois.append(poi)
     pois = np.array(pois)
-    means, Ns = suffix_array.motif_means(to_test, max_motif_len+2, fwd_expsumlogp, rev_expsumlogp, sa)
+    means, Ns = suffix_array.motif_means(to_test, max_motif_len+1, fwd_expsumlogp, rev_expsumlogp, sa)
     Ns = Ns[range(Ns.shape[0]), pois]
     means = means[range(Ns.shape[0]), pois]
     sel = Ns > min_N
@@ -446,7 +448,7 @@ def reduce_motifs(d, sa, max_motif_len, mu, sigma, fwd_expsumlogp, rev_expsumlog
 
                 means, Ns = suffix_array.motif_means(combined_motifs, max_motif_len, fwd_expsumlogp, rev_expsumlogp, sa)
                 #calculate number of std. deviations
-                best = (None, None, np.inf, 0, np.inf)
+                best = (None, None, np.inf, 0, np.inf, np.inf)
                 for (m,motif) in enumerate(combined_motifs):
                     for poi in get_pois(motif):
                         N = min(Ns[m][poi], len(mu)-1)
@@ -458,7 +460,7 @@ def reduce_motifs(d, sa, max_motif_len, mu, sigma, fwd_expsumlogp, rev_expsumlog
                                 else:
                                     test_passed = True
                                 if test_passed:
-                                    best = (motif, poi, means[m][poi], Ns[m][poi], stddevs)
+                                    best = (motif, poi, means[m][poi], Ns[m][poi], stddevs, norm().cdf(stddevs))
                 #logging.getLogger('comos').debug("comparison:", best[4], max(d.iloc[i].stddevs, d.iloc[j].stddevs))
                 if best[4] < thr:
                     logging.getLogger('comos').debug(f"combined {d.iloc[i].motif}:{d.iloc[i].poi} ({d.iloc[i].N}, {d.iloc[i].stddevs:.2f}) and {d.iloc[j].motif}:{d.iloc[j].poi} ({d.iloc[j].N}, {d.iloc[j].stddevs:.2f}) to {best[0]}:{best[1]} ({best[3]}, {best[4]:.2f})")
@@ -481,14 +483,14 @@ def reduce_motifs(d, sa, max_motif_len, mu, sigma, fwd_expsumlogp, rev_expsumlog
                     continue
                 tested.add((d.iloc[i].motif, d.iloc[j].motif))
                 if d.iloc[i].motif == reverse_complement(d.iloc[j].motif):
-                    if d.iloc[i].stddevs >= d.iloc[j].stddevs:
-                        logging.getLogger('comos').debug(f"dropped {d.iloc[j].motif}:{d.iloc[j].poi} ({d.iloc[j].N}, {d.iloc[j].stddevs:.2f}), reverse complement of {d.iloc[i].motif}:{d.iloc[i].poi} ({d.iloc[i].N}, {d.iloc[i].stddevs:.2f})")
+                    if d.iloc[i].stddevs <= d.iloc[j].stddevs:
+                        logging.getLogger('comos').debug(f"flagged {d.iloc[j].motif}:{d.iloc[j].poi} ({d.iloc[j].N}, {d.iloc[j].stddevs:.2f}) as reverse complement of {d.iloc[i].motif}:{d.iloc[i].poi} ({d.iloc[i].N}, {d.iloc[i].stddevs:.2f})")
                         #d = d.drop(d.index[j])
                         d.iloc[j, d.columns.get_loc('representative')] = d.iloc[i].motif
                         changed = True
                         break
                     else:
-                        logging.getLogger('comos').debug(f"dropped {d.iloc[i].motif}:{d.iloc[i].poi} ({d.iloc[i].N}, {d.iloc[i].stddevs:.2f}), reverse complement of {d.iloc[j].motif}:{d.iloc[j].poi} ({d.iloc[j].N}, {d.iloc[j].stddevs:.2f})")
+                        logging.getLogger('comos').debug(f"flagged {d.iloc[i].motif}:{d.iloc[i].poi} ({d.iloc[i].N}, {d.iloc[i].stddevs:.2f}) as reverse complement of {d.iloc[j].motif}:{d.iloc[j].poi} ({d.iloc[j].N}, {d.iloc[j].stddevs:.2f})")
                         #d = d.drop(d.index[i])
                         d.iloc[i, d.columns.get_loc('representative')] = d.iloc[j].motif
                         changed = True
@@ -506,24 +508,35 @@ def main(args):
         logging.getLogger('comos').warning(
             f"Dataset contains {n_contigs} contig(s), "\
             f"only {contig_id} of length {len(seq)} is analyzed")
+    else:
+        logging.getLogger('comos').info(f"Analyzing contig {contig_id} of length {len(seq):,} bp")
+    tstart = time.time()
     df = parse_diff_file(args.rds, contig_id)
+    tstop = time.time()
+    logging.getLogger('comos').info(f"Parsed RDS file in {tstop - tstart:.2f} seconds")
+    
     fwd_expsumlogp, rev_expsumlogp = compute_expsumlogp(df, seq)
     
     motifs = get_seq_index_combinations(args.min_k, args.max_k, args.min_g, args.max_g, ['A', 'C'], 0)
     all_motifs = list(motifs.keys())
-    logging.getLogger('comos').info(f"Analyzing {len(motifs)} motifs and "\
-        f"{sum([len(motifs[i]) for i in motifs])} indices within these motifs")
+    logging.getLogger('comos').info(f"Analyzing {len(motifs):,} motifs and "\
+        f"{sum([len(motifs[i]) for i in motifs]):,} indices within these motifs")
     # do computation
-    #if os.path.exists("dev.pkl"):
-    #    with open("dev.pkl", 'rb') as f:
-    #        means, means_counts = pickle.load(f)
-    #else:
-    tstart = time.time()
-    means, means_counts = suffix_array.motif_means(all_motifs, args.max_k + args.max_g, fwd_expsumlogp, rev_expsumlogp, sa)
-    tstop = time.time()
-    logging.getLogger('comos').info(f"Computed motif scores in {tstop - tstart:.2f} seconds")
-    #    with open("dev.pkl", 'wb') as f:
-    #        pickle.dump((means, means_counts), f)
+    cache_fp = os.path.join(args.cache, f"{contig_id}_k{args.min_k}-{args.max_k}_g{args.min_g}-{args.max_g}.pkl")
+    if os.path.exists(cache_fp) and args.cache:
+        tstart = time.time()
+        with open(cache_fp, 'rb') as f:
+            means, means_counts = pickle.load(f)
+        tstop = time.time()
+        logging.getLogger('comos').info(f"Loaded motif scores from cache in {tstop - tstart:.2f} seconds")
+    else:
+        tstart = time.time()
+        means, means_counts = suffix_array.motif_means(all_motifs, args.max_k + args.max_g, fwd_expsumlogp, rev_expsumlogp, sa)
+        tstop = time.time()
+        logging.getLogger('comos').info(f"Computed motif scores in {tstop - tstart:.2f} seconds")
+        if args.cache:
+            with open(cache_fp, 'wb') as f:
+                pickle.dump((means, means_counts), f)
 
     with warnings.catch_warnings():
         warnings.filterwarnings('ignore', r'All-NaN slice encountered')
@@ -540,6 +553,7 @@ def main(args):
     logging.getLogger('comos').info(f"Performed normal approximation in {tstop - tstart:.2f} seconds")
 
     results['stddevs'] = (results.val - mu[results.N]) / sigma[results.N]
+    results['p-value'] = norm().cdf(results['stddevs'])
 
     if args.plot:
         plot_motif_scores(results, mu, sigma, thr=args.selection_thr, savepath=os.path.join(args.out, f"scores_scatterplot.png"))
@@ -556,7 +570,7 @@ def main(args):
                                  thr=-args.selection_thr, ambiguity_thr=-args.ambiguity_thr)
     tstop = time.time()
     logging.getLogger('comos').info(f"Performed motif reduction in {tstop - tstart:.2f} seconds")
-    motifs_found = motifs_found[['motif', 'poi', 'representative', 'val', 'N', 'stddevs']]
+    motifs_found = motifs_found[['motif', 'poi', 'representative', 'val', 'N', 'stddevs', 'p-value']]
     logging.getLogger('comos').info(f"Reduced to {len(motifs_found)} motifs in {len(motifs_found.representative.unique())} MTase groups:")
     print(motifs_found.set_index(['representative', 'motif']))
     
@@ -564,7 +578,7 @@ def main(args):
         fwd_diff, rev_diff = compute_diffs(df, seq)
         for r,row in motifs_found.loc[motifs_found.motif == motifs_found.representative].iterrows():
             plot_diffs_with_complementary(row.motif, sa, fwd_diff, rev_diff, savepath=os.path.join(args.out, f"{row.motif}_{row.poi}.png"))
-    
+
     motifs_found.to_csv(os.path.join(args.out, f"results.csv"))
     
 
