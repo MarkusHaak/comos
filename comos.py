@@ -14,6 +14,7 @@ from matplotlib import pyplot as plt
 from Bio import SeqIO
 from scipy.optimize import curve_fit
 from scipy.stats import norm
+from tqdm import tqdm
 
 import suffix_array
 
@@ -53,6 +54,24 @@ IUPAC_TO_IUPAC = {
         "N" : {"A":"N", "C":"N", "G":"N", "T":"N", "M":"N", "R":"N", "W":"N", "S":"N", "Y":"N", "K":"N", "V":"N", "H":"N", "D":"N", "B":"N", "N":"N",},
     }
 
+IUPAC_TO_LIST = {
+    "A" : ["A"],
+    "C" : ["C"],
+    "G" : ["G"],
+    "T" : ["T"],
+    "M" : ["A", "C"],
+    "R" : ["A", "G"],
+    "W" : ["A", "T"],
+    "S" : ["C", "G"],
+    "Y" : ["C", "T"],
+    "K" : ["G", "T"],
+    "V" : ["A", "C", "G"],
+    "H" : ["A", "C", "T"],
+    "D" : ["A", "G", "T"],
+    "B" : ["C", "G", "T"],
+    "N" : ["A", "C", "G", "T"],
+}
+
 # for fast reverse complement translation
 comp_trans = str.maketrans("ACGTMRWSYKVHDBN", "TGCAKYWSRMBDHVN")
 def reverse_complement(seq):
@@ -78,7 +97,7 @@ def parse_args():
     io_grp.add_argument(
         '--plot', '-p',
         action='store_true',
-        help='Create and display a plots.'
+        help='Create and save plots.'
     )
     io_grp.add_argument(
         '--cache',
@@ -88,25 +107,25 @@ def parse_args():
 
     motif_grp = parser.add_argument_group('Motif Options')
     motif_grp.add_argument(
-        '--min_k',
+        '--min-k',
         type=int,
         default=4,
         help='Minimum number of specific motif positions.'
     )
     motif_grp.add_argument(
-        '--max_k',
+        '--max-k',
         type=int,
         default=8,
         help='Maximum number of specific motif positions.'
     )
     motif_grp.add_argument(
-        '--min_g',
+        '--min-g',
         type=int,
         default=4,
         help='Minimum gap size in TypeI motifs.'
     )
     motif_grp.add_argument(
-        '--max_g',
+        '--max-g',
         type=int,
         default=9,
         help='Maximum gap size in TypeI motifs.'
@@ -114,22 +133,30 @@ def parse_args():
 
     hyper_grp = parser.add_argument_group('Hyperparameters')
     hyper_grp.add_argument(
-        '--selection_thr',
+        '--selection-thr',
         type=float,
-        default=4.5,
-        help='Minimum diversion in number of std.dev. from Null-model required for a motif to get selected.' 
+        default=4.0,
+        help='Minimum diversion from Null-model in number of std.dev. required for a motif to get selected.' 
     )
     hyper_grp.add_argument(
-        '--ambiguity_thr',
+        '--ambiguity-thr',
         type=float,
         default=2.0,
-        help='Minimum diversion in number of std.dev. diversion from Null-model required for an extended motif.' 
+        help='Minimum diversion from Null-model in number of std.dev. required for an extended motif.' 
     )
     hyper_grp.add_argument(
+        '--ambiguity-cov',
+        type=float,
+        default=30,
+        help='Minimum coverage required to consider a motif in ambiguity testing.' 
+    )
+
+    misc_grp = parser.add_argument_group('Misc')
+    misc_grp.add_argument(
         '--analysis-mode',
         type=float,
-        default=2.0,
-        help='Analyze influence of selection threshold on resulting motifs.' 
+        default=None,
+        help='Analyze influence of the selection threshold on resulting motifs down to this threshold value (default: None).' 
     )
 
     parser.add_argument('--debug', action='store_true')
@@ -344,7 +371,7 @@ def plot_motif_scores(results, mu, sigma, thr=6., savepath=None):
     ax.scatter(results.N,results.val,s=1,alpha=0.25, color='black')
     X = np.linspace(0,5000, 1000)
     ax.plot(X, mu[X.astype(int)], color='C0')
-    ax.plot(X, mu[X.astype(int)] + thr*sigma[X.astype(int)], color='C0', linestyle=':')
+    #ax.plot(X, mu[X.astype(int)] + thr*sigma[X.astype(int)], color='C0', linestyle=':')
     ax.plot(X, mu[X.astype(int)] - thr*sigma[X.astype(int)], color='C0', linestyle=':')
     ax.grid()
     ax.set(ylim=(-0.0005, ax.get_ylim()[1]), xlim=(-50,5000),
@@ -388,8 +415,10 @@ def test_ambiguous(motif, poi, sa, max_motif_len, mu, sigma, fwd_expsumlogp, rev
     to_test = []
     pois = []
     for i in range(len(motif_exp)):
-        if motif_exp[i] == 'N':
-            for b in "ACTG":
+        #if motif_exp[i] == 'N':
+        #    for b in "ACTG":
+        if motif_exp[i] not in "ACGT":
+            for b in IUPAC_TO_LIST[motif_exp[i]]:
                 testcase = "".join(motif_exp[:i] + [b] + motif_exp[i+1:]).strip('N')
                 to_test.append(testcase)
                 if i == 0:
@@ -402,6 +431,7 @@ def test_ambiguous(motif, poi, sa, max_motif_len, mu, sigma, fwd_expsumlogp, rev
     means = means[range(Ns.shape[0]), pois]
     sel = Ns > min_N
     Ns = Ns[sel]
+    Ns = np.clip(Ns, 1, len(mu)-1)
     means = means[sel]
     stddevs = (means - mu[Ns]) / sigma[Ns]
     return np.all(stddevs < ambiguity_thr)
@@ -422,13 +452,16 @@ def get_num_absorbed(motif, absorbed):
             n += get_num_absorbed(m, absorbed)
         return n
 
-def reduce_motifs(d, sa, max_motif_len, mu, sigma, fwd_expsumlogp, rev_expsumlogp, thr, ambiguity_thr=-2, absorbed=None):
+def reduce_motifs(d, sa, max_motif_len, mu, sigma, fwd_expsumlogp, rev_expsumlogp, thr, ambiguity_thr=-2, ambiguity_cov=50, absorbed=None):
     d = d.copy().sort_values(['N','stddevs'], ascending=[False,True])
     # initial filtering
     if ambiguity_thr is not None:
-        d['pass'] = d.apply(lambda row: test_ambiguous(row.motif, row.poi, sa, max_motif_len, mu, sigma, fwd_expsumlogp, rev_expsumlogp, ambiguity_thr), axis=1)
+        d['pass'] = d.apply(lambda row: test_ambiguous(row.motif, row.poi, sa, max_motif_len, mu, sigma, fwd_expsumlogp, rev_expsumlogp, ambiguity_thr, min_N=ambiguity_cov), axis=1)
         for i,row in d.loc[d['pass'] == False].iterrows():
             logging.getLogger('comos').debug(f"excluded {row.motif}:{row.poi} ({row.N}, {row.stddevs:.2f}) : did not pass ambiguity filter")
+        n_excluded = (d['pass'] == False).sum()
+        if n_excluded:
+            logging.info(f"Excluded {n_excluded} motifs because they did not pass ambiguity testing.")
         d = d.loc[d['pass']].drop(['pass'], axis=1)
     
     changed = True
@@ -478,7 +511,7 @@ def reduce_motifs(d, sa, max_motif_len, mu, sigma, fwd_expsumlogp, rev_expsumlog
                         if stddevs < best[4]:
                             if stddevs < thr:
                                 if ambiguity_thr is not None:
-                                    test_passed = test_ambiguous(motif, poi, sa, max_motif_len, mu, sigma, fwd_expsumlogp, rev_expsumlogp, ambiguity_thr)
+                                    test_passed = test_ambiguous(motif, poi, sa, max_motif_len, mu, sigma, fwd_expsumlogp, rev_expsumlogp, ambiguity_thr, min_N=ambiguity_cov)
                                 else:
                                     test_passed = True
                                 if test_passed:
@@ -548,10 +581,10 @@ def main(args):
     
     fwd_expsumlogp, rev_expsumlogp = compute_expsumlogp(df, seq)
     
-    motifs = get_seq_index_combinations(args.min_k, args.max_k, args.min_g, args.max_g, ['A', 'C'], 0)
-    all_motifs = list(motifs.keys())
-    logging.getLogger('comos').info(f"Analyzing {len(motifs):,} motifs and "\
-        f"{sum([len(motifs[i]) for i in motifs]):,} indices within these motifs")
+    canon_motifs = get_seq_index_combinations(args.min_k, args.max_k, args.min_g, args.max_g, ['A', 'C'], 0)
+    all_canon_motifs = list(canon_motifs.keys())
+    logging.getLogger('comos').info(f"Analyzing {len(canon_motifs):,} canonical motifs and "\
+        f"{sum([len(canon_motifs[i]) for i in canon_motifs]):,} indices within these motifs")
     # do computation
     cache_fp = os.path.join(args.cache, f"{contig_id}_k{args.min_k}-{args.max_k}_g{args.min_g}-{args.max_g}.pkl")
     if os.path.exists(cache_fp) and args.cache:
@@ -559,12 +592,12 @@ def main(args):
         with open(cache_fp, 'rb') as f:
             means, means_counts = pickle.load(f)
         tstop = time.time()
-        logging.getLogger('comos').info(f"Loaded motif scores from cache in {tstop - tstart:.2f} seconds")
+        logging.getLogger('comos').info(f"Loaded canonical motif scores from cache in {tstop - tstart:.2f} seconds")
     else:
         tstart = time.time()
-        means, means_counts = suffix_array.motif_means(all_motifs, args.max_k + args.max_g, fwd_expsumlogp, rev_expsumlogp, sa)
+        means, means_counts = suffix_array.motif_means(all_canon_motifs, args.max_k + args.max_g, fwd_expsumlogp, rev_expsumlogp, sa)
         tstop = time.time()
-        logging.getLogger('comos').info(f"Computed motif scores in {tstop - tstart:.2f} seconds")
+        logging.getLogger('comos').info(f"Computed canonical motif scores in {tstop - tstart:.2f} seconds")
         if args.cache:
             with open(cache_fp, 'wb') as f:
                 pickle.dump((means, means_counts), f)
@@ -573,7 +606,7 @@ def main(args):
         warnings.filterwarnings('ignore', r'All-NaN slice encountered')
         best = np.nanmin(means, axis=1)
     mask = ~np.isnan(best)
-    results = pd.DataFrame(best, columns=['val'], index=all_motifs)[mask]
+    results = pd.DataFrame(best, columns=['val'], index=all_canon_motifs)[mask]
     results['poi'] =  np.nanargmin(means[mask], axis=1)
     results['N'] = means_counts[mask][range(results['poi'].shape[0]), results['poi']]
     results = results[['poi', 'val', 'N']] # change order of columns to match that in function reduce_motifs
@@ -585,20 +618,59 @@ def main(args):
 
     results['stddevs'] = (results.val - mu[results.N]) / sigma[results.N]
     results['p-value'] = norm().cdf(results['stddevs'])
+    results = results.reset_index().rename(columns={'index':'motif'})
 
     if args.plot:
         plot_motif_scores(results, mu, sigma, thr=args.selection_thr, savepath=os.path.join(args.out, f"scores_scatterplot.png"))
 
-    sel = (results.stddevs <= -args.selection_thr)
-    logging.getLogger('comos').info(f"Selected {sel.sum()} motifs based on selection threshold of {args.selection_thr} std. deviations:")
-    print(results.loc[sel])
+    if args.analysis_mode is not None:
+        dev_fp = "dev.pkl"
+        if os.path.exists(dev_fp):
+            with open(dev_fp, "rb") as f:
+                thresholds,motifs_dfs,absorbed = pickle.load(f)
+        else:
+            results = results.sort_values('stddevs')
+            thresholds = []
+            motifs_dfs = []
+            absorbed = {}
+            motifs = pd.DataFrame([], columns=['motif', 'poi', 'val', 'N', 'stddevs', 'p-value'])
+            #sel = (results.stddevs <= -args.analysis_mode)
+            #for _,row in tqdm(results.loc[sel].iterrows(), total=results.loc[sel].shape[0]):
+            min_stddev = motifs['stddevs'].min()
+            for sel_thr in tqdm(np.arange(np.round(min_stddev, 1), -(args.analysis_mode-0.001), 0.1)):
+                motifs = motifs[['motif', 'poi', 'val', 'N', 'stddevs', 'p-value']]
+                for _,row in results.loc[(results.stddevs > thresholds[-1]) & (results.stddevs <= sel_thr)].iterrows():
+                    motifs.loc[len(motifs.index)] = row[['motif', 'poi', 'val', 'N', 'stddevs', 'p-value']]
+                thresholds.append(sel_thr)
+                motifs, absorbed = reduce_motifs(
+                    motifs, 
+                    sa, args.max_k + args.max_g, 
+                    mu, sigma, 
+                    fwd_expsumlogp, rev_expsumlogp,
+                    thr=sel_thr, #thr=row.stddevs, 
+                    ambiguity_thr=-args.ambiguity_thr, 
+                    ambiguity_cov=-args.ambiguity_cov,
+                    absorbed=absorbed)
+                motifs['n_canonical'] = motifs['motif'].apply(get_num_absorbed, absorbed=absorbed)
+                thresholds.append(row.stddevs)
+                motifs_dfs.append(motifs.copy())
+            with open(dev_fp, "wb") as f:
+                pickle.dump((thresholds,motifs_dfs,absorbed), f)
+        breakpoint()
 
+    
+    sel = (results.stddevs <= -args.selection_thr)
+    logging.getLogger('comos').info(f"Selected {sel.sum():,} motifs based on selection threshold of {args.selection_thr} std. deviations:")
+    print(results.loc[sel])
     tstart = time.time()
-    motifs_found, absorbed = reduce_motifs(results.loc[sel].reset_index().rename(columns={'index':'motif'}), 
-                                 sa, args.max_k + args.max_g, 
-                                 mu, sigma, 
-                                 fwd_expsumlogp, rev_expsumlogp,
-                                 thr=-args.selection_thr, ambiguity_thr=-args.ambiguity_thr)
+    motifs_found, absorbed = reduce_motifs(
+        results.loc[sel], 
+        sa, args.max_k + args.max_g, 
+        mu, sigma, 
+        fwd_expsumlogp, rev_expsumlogp,
+        thr=-args.selection_thr, 
+        ambiguity_thr=-args.ambiguity_thr, 
+        ambiguity_cov=-args.ambiguity_cov,)
     tstop = time.time()
     logging.getLogger('comos').info(f"Performed motif reduction in {tstop - tstart:.2f} seconds")
     motifs_found['n_canonical'] = motifs_found['motif'].apply(get_num_absorbed, absorbed=absorbed)
