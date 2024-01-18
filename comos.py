@@ -186,6 +186,11 @@ def parse_args():
     args.genome = os.path.abspath(args.genome)
     args.rds = os.path.abspath(args.rds)
 
+    # check hyperparameters
+    if args.ambiguity_thr > args.selection_thr:
+        logging.getLogger('comos').warning(f"Ambiguity threshold is set to selection threshold since it should not be larger.")
+        args.ambiguity_thr = args.selection_thr
+
     return args
 
 def parse_diff_file(fp, contig_id):
@@ -301,7 +306,7 @@ def plot_diffs_with_complementary(motif, sa, fwd_diff, rev_diff, ymax=np.inf, of
     
     fig,(ax1,ax2) = plt.subplots(2,1)
     fig.subplots_adjust(hspace=0.3)
-    ax1.set_title(motif)
+    ax1.set_title(f"{motif}, N(+)={n_fwd:,}, N(-)={n_rev:,}")
     ax1.boxplot(data_fwd)
     ax2.boxplot(data_rev)
     ax1.set_xticks(ax1.get_xticks())
@@ -423,7 +428,7 @@ def combine_motifs(m1, m2):
             combined_motifs.append(combined)
     return combined_motifs
 
-def test_ambiguous(motif, poi, sa, max_motif_len, mu, sigma, fwd_expsumlogp, rev_expsumlogp, ambiguity_thr, ambiguity_quantile, min_N=50, debug=False):
+def test_ambiguous(motif, poi, sa, max_motif_len, mu, sigma, fwd_expsumlogp, rev_expsumlogp, ambiguity_thr, ambiguity_quantile, min_N=30, debug=False):
     if "NNN" in motif: # Type I
         # only check flanking Ns
         callback = lambda pat: pat.group(1)+pat.group(2).lower()+pat.group(3)
@@ -446,14 +451,46 @@ def test_ambiguous(motif, poi, sa, max_motif_len, mu, sigma, fwd_expsumlogp, rev
     means, Ns = suffix_array.motif_means(to_test, max_motif_len+1, fwd_expsumlogp, rev_expsumlogp, sa)
     Ns = Ns[range(Ns.shape[0]), pois]
     means = means[range(Ns.shape[0]), pois]
-    sel = Ns > min_N
+    sel = Ns >= min_N
     Ns = Ns[sel]
     Ns = np.clip(Ns, 1, len(mu)-1)
     means = means[sel]
     stddevs = (means - mu[Ns]) / sigma[Ns]
     if debug:
         print(pd.DataFrame([(m, N, stddev) for m, N, stddev in zip(np.array(to_test)[sel], Ns, stddevs)], columns=['ext_motif', 'N', 'stddev']))
+    if stddevs.shape[0] == 0:
+        return True
     return np.quantile(stddevs, ambiguity_quantile) < ambiguity_thr
+
+def test_exploded(motif, poi, sa, max_motif_len, mu, sigma, fwd_expsumlogp, rev_expsumlogp, selection_thr, min_N=30, debug=False):
+    to_test = IUPAC_TO_LIST[motif[0]][:]
+    for i in range(1,len(motif)):
+        to_test_ = []
+        for m in to_test:
+            if motif[i] == 'N':
+                to_test_.append(m + 'N')
+                continue
+            for b in IUPAC_TO_LIST[motif[i]]:
+                to_test_.append(m + b)
+        to_test = to_test_
+    #print(motif, to_test)
+    if len(to_test) == 1:
+        return True
+    
+    means, Ns = suffix_array.motif_means(to_test, max_motif_len+1, fwd_expsumlogp, rev_expsumlogp, sa)
+    with warnings.catch_warnings():
+        warnings.filterwarnings('ignore', r'All-NaN slice encountered')
+        best = np.nanmin(means, axis=1)
+    mask = ~np.isnan(best)
+    results = pd.DataFrame(best, columns=['val'], index=to_test)[mask]
+    results['poi'] =  np.nanargmin(means[mask], axis=1)
+    results['N'] = Ns[mask][range(results['poi'].shape[0]), results['poi']]
+    Ns = np.clip(results['N'], 1, len(mu)-1)
+    results['stddevs'] = (results['val'] - mu[Ns]) / sigma[Ns]
+    if debug:
+        print(results)
+    sel = results['N'] >= min_N
+    return np.all(results.loc[sel]['stddevs'] < selection_thr)
 
 def get_pois(motif):
     pois = []
@@ -530,11 +567,13 @@ def reduce_motifs(d, sa, max_motif_len, mu, sigma, fwd_expsumlogp, rev_expsumlog
                         if stddevs < best[4]:
                             if stddevs < thr:
                                 if ambiguity_thr is not None:
-                                    test_passed = test_ambiguous(motif, poi, sa, max_motif_len, mu, sigma, fwd_expsumlogp, rev_expsumlogp, ambiguity_thr, ambiguity_quantile=ambiguity_quantile, min_N=ambiguity_cov)
-                                else:
-                                    test_passed = True
-                                if test_passed:
-                                    best = (motif, poi, means[m][poi], Ns[m][poi], stddevs, norm().cdf(stddevs))
+                                    if not test_ambiguous(motif, poi, sa, max_motif_len, mu, sigma, fwd_expsumlogp, rev_expsumlogp, ambiguity_thr, ambiguity_quantile=ambiguity_quantile, min_N=ambiguity_cov):
+                                        continue
+                                # test if all exploded, canonical motifs of the combined motif are above the selection threshold
+                                if not test_exploded(motif, poi, sa, max_motif_len, mu, sigma, fwd_expsumlogp, rev_expsumlogp, thr):
+                                    logging.getLogger('comos').debug(f'exploded motif test failed for motif {motif}')
+                                    continue
+                                best = (motif, poi, means[m][poi], Ns[m][poi], stddevs, norm().cdf(stddevs))
                 #logging.getLogger('comos').debug("comparison:", best[4], max(d.iloc[i].stddevs, d.iloc[j].stddevs))
                 if best[4] < thr:
                     new_motif = pd.Series(best, index=d.columns)
@@ -656,6 +695,11 @@ def main(args):
         for m,row in res.iterrows():
             print(f"\nAmbiguous-Test results for motif {m}:{int(row.poi)}")
             passed = test_ambiguous(m, int(row.poi), sa, len(m), mu, sigma, fwd_expsumlogp, rev_expsumlogp, ambiguity_thr=-args.ambiguity_thr, ambiguity_quantile=args.ambiguity_quantile, min_N=args.ambiguity_cov, debug=True)
+        
+        if args.plot:
+            fwd_diff, rev_diff = compute_diffs(df, seq)
+            for m,row in res.iterrows():
+                plot_diffs_with_complementary(m, sa, fwd_diff, rev_diff, savepath=os.path.join(args.out, f"{m}_{row.poi}.png"))
         res = res.reset_index().rename(columns={'index':'motif'})
         print(res)
         exit()
@@ -729,6 +773,8 @@ def main(args):
     
 
 if __name__ == '__main__':
+    #logging.basicConfig(format=f'%(levelname)s [%(asctime)s] : %(message)s',
+    #                    datefmt='%H:%M:%S')
     args = parse_args()
     level = logging.DEBUG if args.debug else logging.INFO
     logging.basicConfig(level=level, 
