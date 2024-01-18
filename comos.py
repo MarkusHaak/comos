@@ -473,7 +473,6 @@ def test_exploded(motif, poi, sa, max_motif_len, mu, sigma, fwd_expsumlogp, rev_
             for b in IUPAC_TO_LIST[motif[i]]:
                 to_test_.append(m + b)
         to_test = to_test_
-    #print(motif, to_test)
     if len(to_test) == 1:
         return True
     
@@ -621,6 +620,9 @@ def reduce_motifs(d, sa, max_motif_len, mu, sigma, fwd_expsumlogp, rev_expsumlog
                 break
     return d.sort_values('stddevs').reset_index(drop=True), absorbed
 
+def is_palindromic(motif):
+    return reverse_complement(motif) == motif
+
 def main(args):
     tstart = time.time()
     seq, sa, contig_id, n_contigs = parse_largest_contig(args.genome, args.cache)
@@ -760,7 +762,12 @@ def main(args):
     tstop = time.time()
     logging.getLogger('comos').info(f"Performed motif reduction in {tstop - tstart:.2f} seconds")
     motifs_found['n_canonical'] = motifs_found['motif'].apply(get_num_absorbed, absorbed=absorbed)
-    motifs_found = motifs_found[['motif', 'poi', 'representative', 'val', 'N', 'stddevs', 'p-value', 'n_canonical']]
+    motifs_found['Type'] = ""
+    gapped = motifs_found['motif'].str.contains('NNN')
+    motifs_found.loc[gapped, 'Type'] = "I"
+    motifs_found.loc[(~gapped) & (motifs_found['motif'].apply(is_palindromic)), 'Type'] = "II"
+    motifs_found.loc[motifs_found['Type'] == "", 'Type'] = "III"
+    motifs_found = motifs_found[['motif', 'poi', 'representative', 'Type', 'val', 'N', 'stddevs', 'p-value', 'n_canonical']]
     logging.getLogger('comos').info(f"Reduced to {len(motifs_found)} motifs in {len(motifs_found.representative.unique())} MTase groups:")
     print(motifs_found.set_index(['representative', 'motif']))
     
