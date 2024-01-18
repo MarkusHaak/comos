@@ -5,6 +5,7 @@ import logging
 import itertools
 import pickle
 import time
+import re
 
 import pandas as pd
 import numpy as np
@@ -141,7 +142,7 @@ def parse_args():
     hyper_grp.add_argument(
         '--ambiguity-thr',
         type=float,
-        default=2.0,
+        default=3.,
         help='Minimum diversion from Null-model in number of std.dev. required for an extended motif.' 
     )
     hyper_grp.add_argument(
@@ -150,14 +151,26 @@ def parse_args():
         default=30,
         help='Minimum coverage required to consider a motif in ambiguity testing.' 
     )
+    hyper_grp.add_argument(
+        '--ambiguity-quantile',
+        type=float,
+        default=0.8,
+        help='Quantile of the ambiguity-replaced motifs that needs to be below the ambiguity threshold.' 
+    )
 
     misc_grp = parser.add_argument_group('Misc')
+    misc_grp.add_argument(
+        '--test-motifs',
+        nargs='+',
+        help='Analyze the given IUPAC motifs.' 
+    )
     misc_grp.add_argument(
         '--analysis-mode',
         type=float,
         default=None,
         help='Analyze influence of the selection threshold on resulting motifs down to this threshold value (default: None).' 
     )
+
 
     parser.add_argument('--debug', action='store_true')
     args = parser.parse_args()
@@ -410,16 +423,20 @@ def combine_motifs(m1, m2):
             combined_motifs.append(combined)
     return combined_motifs
 
-def test_ambiguous(motif, poi, sa, max_motif_len, mu, sigma, fwd_expsumlogp, rev_expsumlogp, ambiguity_thr, min_N=50):
+def test_ambiguous(motif, poi, sa, max_motif_len, mu, sigma, fwd_expsumlogp, rev_expsumlogp, ambiguity_thr, ambiguity_quantile, min_N=50, debug=False):
+    if "NNN" in motif: # Type I
+        # only check flanking Ns
+        callback = lambda pat: pat.group(1)+pat.group(2).lower()+pat.group(3)
+        motif = re.sub(r"(N)(N+)(N)", callback, motif)
     motif_exp = ["N"] + list(motif) + ["N"]
     to_test = []
     pois = []
     for i in range(len(motif_exp)):
         #if motif_exp[i] == 'N':
         #    for b in "ACTG":
-        if motif_exp[i] not in "ACGT":
+        if motif_exp[i] not in "ACGTn":
             for b in IUPAC_TO_LIST[motif_exp[i]]:
-                testcase = "".join(motif_exp[:i] + [b] + motif_exp[i+1:]).strip('N')
+                testcase = "".join(motif_exp[:i] + [b] + motif_exp[i+1:]).strip('N').upper()
                 to_test.append(testcase)
                 if i == 0:
                     pois.append(poi+1)
@@ -434,7 +451,9 @@ def test_ambiguous(motif, poi, sa, max_motif_len, mu, sigma, fwd_expsumlogp, rev
     Ns = np.clip(Ns, 1, len(mu)-1)
     means = means[sel]
     stddevs = (means - mu[Ns]) / sigma[Ns]
-    return np.all(stddevs < ambiguity_thr)
+    if debug:
+        print(pd.DataFrame([(m, N, stddev) for m, N, stddev in zip(np.array(to_test)[sel], Ns, stddevs)], columns=['ext_motif', 'N', 'stddev']))
+    return np.quantile(stddevs, ambiguity_quantile) < ambiguity_thr
 
 def get_pois(motif):
     pois = []
@@ -452,11 +471,11 @@ def get_num_absorbed(motif, absorbed):
             n += get_num_absorbed(m, absorbed)
         return n
 
-def reduce_motifs(d, sa, max_motif_len, mu, sigma, fwd_expsumlogp, rev_expsumlogp, thr, ambiguity_thr=-2, ambiguity_cov=50, absorbed=None):
+def reduce_motifs(d, sa, max_motif_len, mu, sigma, fwd_expsumlogp, rev_expsumlogp, thr, ambiguity_thr=-3., ambiguity_quantile=0.8, ambiguity_cov=50, absorbed=None):
     d = d.copy().sort_values(['N','stddevs'], ascending=[False,True])
     # initial filtering
     if ambiguity_thr is not None:
-        d['pass'] = d.apply(lambda row: test_ambiguous(row.motif, row.poi, sa, max_motif_len, mu, sigma, fwd_expsumlogp, rev_expsumlogp, ambiguity_thr, min_N=ambiguity_cov), axis=1)
+        d['pass'] = d.apply(lambda row: test_ambiguous(row.motif, row.poi, sa, max_motif_len, mu, sigma, fwd_expsumlogp, rev_expsumlogp, ambiguity_thr, ambiguity_quantile=ambiguity_quantile, min_N=ambiguity_cov), axis=1)
         for i,row in d.loc[d['pass'] == False].iterrows():
             logging.getLogger('comos').debug(f"excluded {row.motif}:{row.poi} ({row.N}, {row.stddevs:.2f}) : did not pass ambiguity filter")
         n_excluded = (d['pass'] == False).sum()
@@ -511,7 +530,7 @@ def reduce_motifs(d, sa, max_motif_len, mu, sigma, fwd_expsumlogp, rev_expsumlog
                         if stddevs < best[4]:
                             if stddevs < thr:
                                 if ambiguity_thr is not None:
-                                    test_passed = test_ambiguous(motif, poi, sa, max_motif_len, mu, sigma, fwd_expsumlogp, rev_expsumlogp, ambiguity_thr, min_N=ambiguity_cov)
+                                    test_passed = test_ambiguous(motif, poi, sa, max_motif_len, mu, sigma, fwd_expsumlogp, rev_expsumlogp, ambiguity_thr, ambiguity_quantile=ambiguity_quantile, min_N=ambiguity_cov)
                                 else:
                                     test_passed = True
                                 if test_passed:
@@ -620,6 +639,27 @@ def main(args):
     results['p-value'] = norm().cdf(results['stddevs'])
     results = results.reset_index().rename(columns={'index':'motif'})
 
+    if args.test_motifs:
+        means, Ns = suffix_array.motif_means(args.test_motifs, np.max([len(m) for m in args.test_motifs]), fwd_expsumlogp, rev_expsumlogp, sa)
+        with warnings.catch_warnings():
+            warnings.filterwarnings('ignore', r'All-NaN slice encountered')
+            best = np.nanmin(means, axis=1)
+        mask = ~np.isnan(best)
+        res = pd.DataFrame(best, columns=['val'], index=args.test_motifs)[mask]
+        res['poi'] =  np.nanargmin(means[mask], axis=1)
+        res['poi'] = res['poi'].astype('int32')
+        res['N'] = Ns[mask][range(res['poi'].shape[0]), res['poi']]
+        res = res[['poi', 'val', 'N']]
+        res['stddevs'] = (res.val - mu[np.clip(res.N, 1, len(mu)-1)]) / sigma[np.clip(res.N, 1, len(mu)-1)]
+        res['p-value'] = norm().cdf(res['stddevs'])
+
+        for m,row in res.iterrows():
+            print(f"\nAmbiguous-Test results for motif {m}:{int(row.poi)}")
+            passed = test_ambiguous(m, int(row.poi), sa, len(m), mu, sigma, fwd_expsumlogp, rev_expsumlogp, ambiguity_thr=-args.ambiguity_thr, ambiguity_quantile=args.ambiguity_quantile, min_N=args.ambiguity_cov, debug=True)
+        res = res.reset_index().rename(columns={'index':'motif'})
+        print(res)
+        exit()
+
     if args.plot:
         plot_motif_scores(results, mu, sigma, thr=args.selection_thr, savepath=os.path.join(args.out, f"scores_scatterplot.png"))
 
@@ -648,7 +688,8 @@ def main(args):
                     mu, sigma, 
                     fwd_expsumlogp, rev_expsumlogp,
                     thr=sel_thr, #thr=row.stddevs, 
-                    ambiguity_thr=-args.ambiguity_thr, 
+                    ambiguity_thr=-args.ambiguity_thr,
+                    ambiguity_quantile=args.ambiguity_quantile, 
                     ambiguity_cov=-args.ambiguity_cov,
                     absorbed=absorbed)
                 motifs['n_canonical'] = motifs['motif'].apply(get_num_absorbed, absorbed=absorbed)
@@ -669,7 +710,8 @@ def main(args):
         mu, sigma, 
         fwd_expsumlogp, rev_expsumlogp,
         thr=-args.selection_thr, 
-        ambiguity_thr=-args.ambiguity_thr, 
+        ambiguity_thr=-args.ambiguity_thr,
+        ambiguity_quantile=args.ambiguity_quantile, 
         ambiguity_cov=-args.ambiguity_cov,)
     tstop = time.time()
     logging.getLogger('comos').info(f"Performed motif reduction in {tstop - tstart:.2f} seconds")
