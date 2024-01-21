@@ -440,11 +440,12 @@ def motif_contains(m1, m2):
         for j in range(lm2):
             if m1[i+j] != m2[j]:
                 identical = False
-            #if m1[i+j] == 'N' and m2[j] != 'N':
-            #    # do not match agaist TypeI motif gaps
-            #    break
-            if m1[i+j] != IUPAC_TO_IUPAC[m1[i+j]][m2[j]]:
-                break
+            if m2[j] != 'N':
+                if m1[i+j] == 'N':
+                    # do not match agaist TypeI motif gaps
+                    break
+                if m1[i+j] != IUPAC_TO_IUPAC[m1[i+j]][m2[j]]:
+                    break
         else:
             return i, identical
     return None, False
@@ -456,7 +457,7 @@ def motif_diff(m1, m2, m2_idx):
     lm1, lm2 = len(m1), len(m2)
     diff = []
     for i in range(lm1):
-        if i < m2_idx or i >= m2_idx + lm2:
+        if i < m2_idx or i >= m2_idx + lm2 or m2[i - m2_idx] == 'N':
             if m1[i] == 'N':
                 diff.append('N')
             else:
@@ -465,7 +466,7 @@ def motif_diff(m1, m2, m2_idx):
             # use m1 bases at overlap positions. 
             # These might not be identical to m2, e.g. ASST instead of ACGT
             diff.append(m1[i])
-    return "".join(diff)
+    return "".join(diff).strip('N') 
 
 def combine_motifs(m1, m2):
     if len(m1) < len(m2):
@@ -499,7 +500,7 @@ def test_ambiguous(motif, poi, sa, max_motif_len, mu, sigma, fwd_expsumlogp, rev
         motif = re.sub(r"(N)(N+)(N)", callback, motif)
     motif_exp = ["N"] + list(motif) + ["N"]
     to_test = []
-    pois = []
+    #pois = []
     for i in range(len(motif_exp)):
         #if motif_exp[i] == 'N':
         #    for b in "ACTG":
@@ -507,24 +508,32 @@ def test_ambiguous(motif, poi, sa, max_motif_len, mu, sigma, fwd_expsumlogp, rev
             for b in IUPAC_TO_LIST[motif_exp[i]]:
                 testcase = "".join(motif_exp[:i] + [b] + motif_exp[i+1:]).strip('N').upper()
                 to_test.append(testcase)
-                if i == 0:
-                    pois.append(poi+1)
-                else:
-                    pois.append(poi)
-    pois = np.array(pois)
+                #if i == 0:
+                #    pois.append(poi+1)
+                #else:
+                #    pois.append(poi)
+    #pois = np.array(pois)
     means, Ns = suffix_array.motif_means(to_test, max_motif_len+1, fwd_expsumlogp, rev_expsumlogp, sa)
-    Ns = Ns[range(Ns.shape[0]), pois]
-    means = means[range(Ns.shape[0]), pois]
-    sel = Ns >= min_N
-    Ns = Ns[sel]
-    Ns = np.clip(Ns, 1, len(mu)-1)
-    means = means[sel]
-    stddevs = (means - mu[Ns]) / sigma[Ns]
+    with warnings.catch_warnings():
+        warnings.filterwarnings('ignore', r'All-NaN slice encountered')
+        best = np.nanmin(means, axis=1)
+    mask = ~np.isnan(best)
+    #Ns = Ns[range(Ns.shape[0]), pois]
+    #means = means[range(Ns.shape[0]), pois]
+    #sel = Ns >= min_N
+    #Ns = Ns[sel]
+    #Ns = np.clip(Ns, 1, len(mu)-1)
+    #means = means[sel]
+    #stddevs = (means - mu[Ns]) / sigma[Ns]
+    results = pd.DataFrame(best, columns=['val'], index=to_test)[mask]
+    results['poi'] =  np.nanargmin(means[mask], axis=1)
+    results['N'] = Ns[mask][range(results['poi'].shape[0]), results['poi']]
+    Ns = np.clip(results['N'], 1, len(mu)-1)
+    results['stddevs'] = (results['val'] - mu[Ns]) / sigma[Ns]
     if debug:
-        print(pd.DataFrame([(m, N, stddev) for m, N, stddev in zip(np.array(to_test)[sel], Ns, stddevs)], columns=['ext_motif', 'N', 'stddev']))
-    if stddevs.shape[0] == 0:
-        return True
-    return np.quantile(stddevs, ambiguity_quantile) < ambiguity_thr
+        print(results)
+    sel = results['N'] >= min_N
+    return np.quantile(results.loc[sel]['stddevs'], ambiguity_quantile) < ambiguity_thr
 
 def test_exploded(motif, poi, sa, max_motif_len, mu, sigma, fwd_expsumlogp, rev_expsumlogp, selection_thr, min_N=30, debug=False):
     to_test = IUPAC_TO_LIST[motif[0]][:]
@@ -603,7 +612,7 @@ def reduce_motifs(d, sa, max_motif_len, mu, sigma, fwd_expsumlogp, rev_expsumlog
                 # check if one is contained in the other (e.g. ATGC and CATGC)
                 # if this is the case, then check if the additional
                 # base(s) are required (check if DATGC < selection_thr)
-                if len(d.iloc[i].motif) == len(d.iloc[j].motif):
+                if len(d.iloc[i].motif) - d.iloc[i].motif.count('N') == len(d.iloc[j].motif) - d.iloc[j].motif.count('N'): #if len(d.iloc[i].motif) == len(d.iloc[j].motif):
                     idx, ident = motif_contains(d.iloc[j].motif, d.iloc[i].motif)
                     if idx is not None:
                         # mi is equally long than mj and contained in mj
@@ -626,7 +635,7 @@ def reduce_motifs(d, sa, max_motif_len, mu, sigma, fwd_expsumlogp, rev_expsumlog
                         d = d.drop(d.index[j])
                         changed = True
                         break
-                elif len(d.iloc[i].motif) < len(d.iloc[j].motif):
+                elif len(d.iloc[i].motif) - d.iloc[i].motif.count('N') < len(d.iloc[j].motif) - d.iloc[j].motif.count('N'): #elif len(d.iloc[i].motif) < len(d.iloc[j].motif):
                     idx, ident = motif_contains(d.iloc[j].motif, d.iloc[i].motif)
                     if idx is not None:# and ident == True:
                         # mi is shorter than mj and contained in mj
@@ -749,7 +758,7 @@ def reduce_motifs(d, sa, max_motif_len, mu, sigma, fwd_expsumlogp, rev_expsumlog
                     # check if one is contained in the other (e.g. ATGC and CATGC)
                     # if this is the case, then check if the additional
                     # base(s) are required (check if DATGC < selection_thr)
-                    if len(d.iloc[i].motif) == len(d.iloc[j].motif):
+                    if len(d.iloc[i].motif) - d.iloc[i].motif.count('N') == len(d.iloc[j].motif) - d.iloc[j].motif.count('N'): #if len(d.iloc[i].motif) == len(d.iloc[j].motif):
                         idx, ident = motif_contains(d.iloc[j].motif, d.iloc[i].motif)
                         if idx is not None:
                             # mi is equally long than mj and contained in mj
@@ -772,7 +781,7 @@ def reduce_motifs(d, sa, max_motif_len, mu, sigma, fwd_expsumlogp, rev_expsumlog
                             d = d.drop(d.index[j])
                             changed = True
                             break
-                    elif len(d.iloc[i].motif) < len(d.iloc[j].motif):
+                    elif len(d.iloc[i].motif) - d.iloc[i].motif.count('N') < len(d.iloc[j].motif) - d.iloc[j].motif.count('N'): #elif len(d.iloc[i].motif) < len(d.iloc[j].motif):
                         idx, ident = motif_contains(d.iloc[j].motif, d.iloc[i].motif)
                         if idx is not None:# and ident == True:
                             # mi is shorter than mj and contained in mj
@@ -885,10 +894,16 @@ def reduce_motifs(d, sa, max_motif_len, mu, sigma, fwd_expsumlogp, rev_expsumlog
                             if stddevs < thr:
                                 if ambiguity_thr is not None:
                                     if not test_ambiguous(motif, poi, sa, max_motif_len, mu, sigma, fwd_expsumlogp, rev_expsumlogp, ambiguity_thr, ambiguity_quantile=ambiguity_quantile, min_N=ambiguity_cov):
-                                        continue
+                                        if d.iloc[i].typeI:
+                                            if test_ambiguous(reverse_complement(motif), None, sa, max_motif_len, mu, sigma, fwd_expsumlogp, rev_expsumlogp, ambiguity_thr, ambiguity_quantile=ambiguity_quantile, min_N=ambiguity_cov):
+                                                logging.getLogger('comos').info(f'ambiguous test failed for combined motif {motif} but not its reverse complement.')
+                                            else:
+                                                continue
+                                        else:
+                                            continue
                                 # test if all exploded, canonical motifs of the combined motif are above the selection threshold
                                 if not test_exploded(motif, poi, sa, max_motif_len, mu, sigma, fwd_expsumlogp, rev_expsumlogp, thr):
-                                    logging.getLogger('comos').debug(f'exploded motif test failed for motif {motif}')
+                                    logging.getLogger('comos').debug(f'exploded motif test failed for combined motif {motif}')
                                     continue
                                 best = (motif, poi, means[m][poi], Ns[m][poi], stddevs, norm().cdf(stddevs), d.iloc[i].typeI)
                 #logging.getLogger('comos').debug("comparison:", best[4], max(d.iloc[i].stddevs, d.iloc[j].stddevs))
@@ -1081,11 +1096,16 @@ def main(args):
         for m,row in res.iterrows():
             print(f"\nAmbiguous-Test results for motif {m}:{int(row.poi)}")
             passed = test_ambiguous(m, int(row.poi), sa, len(m), mu, sigma, fwd_expsumlogp, rev_expsumlogp, ambiguity_thr=-args.ambiguity_thr, ambiguity_quantile=args.ambiguity_quantile, min_N=args.ambiguity_cov, debug=True)
+            print(passed)
+            print(f"\nExploded-Test results for motif {m}:{int(row.poi)}")
+            passed = test_exploded(m, int(row.poi), sa, len(m), mu, sigma, fwd_expsumlogp, rev_expsumlogp, args.selection_thr, debug=True)
+            print(passed)
+            print()
         
         if args.plot:
             fwd_diff, rev_diff = compute_diffs(df, seq)
             for m,row in res.iterrows():
-                plot_diffs_with_complementary(m, sa, fwd_diff, rev_diff, savepath=os.path.join(args.out, f"{m}_{row.poi}.png"))
+                plot_diffs_with_complementary(m, sa, fwd_diff, rev_diff, savepath=os.path.join(args.out, f"{m}_{row.poi}.png"), ymax=8.)
         res = res.reset_index().rename(columns={'index':'motif'})
         print(res)
         exit()
