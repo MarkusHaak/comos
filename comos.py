@@ -416,10 +416,6 @@ def plot_motif_scores(results, mu, sigma, thr=6., savepath=None):
     else:
         plt.show()
 
-def combine_IUPAC(m1, m2):
-    assert len(m1) == len(m2)
-    return "".join([IUPAC_TO_IUPAC[b1][b2] for (b1,b2) in zip(m1, m2)])
-
 def motif_contains(m1, m2):
     """
     Checks if IUPAC motif m2 is identically contained in IUPAC motif m1.
@@ -428,8 +424,8 @@ def motif_contains(m1, m2):
     ident is True if the substring of m1 at idx of length len(m2) is identical to m2
     
     Examples:
-    ATC is identically contained in CATC
-    ATC is non-identically contained in CATS
+    ATC is identically contained in CATC at index 1
+    ATC is non-identically contained in CATS at index 1
     ATN is not contained in CATS
     """
     lm1, lm2 = len(m1), len(m2)
@@ -468,6 +464,10 @@ def motif_diff(m1, m2, m2_idx):
             diff.append(m1[i])
     return "".join(diff).strip('N') 
 
+def combine_IUPAC(m1, m2):
+    assert len(m1) == len(m2)
+    return "".join([IUPAC_TO_IUPAC[b1][b2] for (b1,b2) in zip(m1, m2)])
+
 def combine_motifs(m1, m2):
     if len(m1) < len(m2):
         mshort = m1
@@ -493,47 +493,48 @@ def combine_motifs(m1, m2):
             combined_motifs.append(combined)
     return combined_motifs
 
-def test_ambiguous(motif, poi, sa, max_motif_len, mu, sigma, fwd_expsumlogp, rev_expsumlogp, ambiguity_thr, ambiguity_quantile, min_N=30, debug=False):
+def test_ambiguous(motif, sa, max_motif_len, mu, sigma, fwd_expsumlogp, rev_expsumlogp, ambiguity_thr, ambiguity_quantile, min_N=30, debug=False):
     if "NNN" in motif: # Type I
         # only check flanking Ns
         callback = lambda pat: pat.group(1)+pat.group(2).lower()+pat.group(3)
         motif = re.sub(r"(N)(N+)(N)", callback, motif)
     motif_exp = ["N"] + list(motif) + ["N"]
     to_test = []
-    #pois = []
     for i in range(len(motif_exp)):
-        #if motif_exp[i] == 'N':
-        #    for b in "ACTG":
         if motif_exp[i] not in "ACGTn":
             for b in IUPAC_TO_LIST[motif_exp[i]]:
                 testcase = "".join(motif_exp[:i] + [b] + motif_exp[i+1:]).strip('N').upper()
                 to_test.append(testcase)
-                #if i == 0:
-                #    pois.append(poi+1)
-                #else:
-                #    pois.append(poi)
-    #pois = np.array(pois)
     means, Ns = suffix_array.motif_means(to_test, max_motif_len+1, fwd_expsumlogp, rev_expsumlogp, sa)
-    with warnings.catch_warnings():
-        warnings.filterwarnings('ignore', r'All-NaN slice encountered')
-        best = np.nanmin(means, axis=1)
-    mask = ~np.isnan(best)
-    #Ns = Ns[range(Ns.shape[0]), pois]
-    #means = means[range(Ns.shape[0]), pois]
-    #sel = Ns >= min_N
-    #Ns = Ns[sel]
-    #Ns = np.clip(Ns, 1, len(mu)-1)
-    #means = means[sel]
-    #stddevs = (means - mu[Ns]) / sigma[Ns]
-    results = pd.DataFrame(best, columns=['val'], index=to_test)[mask]
-    results['poi'] =  np.nanargmin(means[mask], axis=1)
-    results['N'] = Ns[mask][range(results['poi'].shape[0]), results['poi']]
-    Ns = np.clip(results['N'], 1, len(mu)-1)
-    results['stddevs'] = (results['val'] - mu[Ns]) / sigma[Ns]
+    # shift the data of the first four testcases to the left, because they have an additional leading base
+    for i in range(4):
+        means[i, :-1] = means[i, 1:]
+        means[i, -1] = np.nan 
+        Ns[i, :-1] = Ns[i, 1:]
+        Ns[i, -1] = 0
+    no_sites = np.all(Ns == 0, axis=1)
+    pois = np.all(~np.isnan(means[~no_sites]), axis=0)
+    # instead of taking min over all array (best),
+    # take max over columns (repr. poi) and min over those
+    Ns = np.clip(Ns, 1, len(mu)-1)
+    stddevs = (means - mu[Ns]) / sigma[Ns]
+    stddevs[Ns < min_N] = np.nan # mask sites with low coverage
+    max_stddev_per_poi = np.nanquantile(stddevs[~no_sites][:, pois], ambiguity_quantile, axis=0) # nanquantile alone not sufficient because we want to exclude columns e.g. with single entries
+    best_poi = np.argmin(max_stddev_per_poi) # careful: best_pois refers to selection of pois, not a motif index!
     if debug:
-        print(results)
-    sel = results['N'] >= min_N
-    return np.quantile(results.loc[sel]['stddevs'], ambiguity_quantile) < ambiguity_thr
+        pois_idx = np.where(pois)[0]
+        to_test_ = [' ' + m if i >= 4 else m for i,m in enumerate(to_test)]
+        to_test__ = []
+        for m in to_test_:
+            m = list(m)
+            for i in pois_idx+1:
+                m[i] = m[i].lower()
+            to_test__.append("".join(m))
+        print(pd.DataFrame(stddevs[~no_sites][:, pois].round(2),
+                           index=to_test__,
+                           columns=pois_idx))
+        print('best column:', best_poi, '= motif index', np.searchsorted(np.cumsum(pois), best_poi+1))
+    return max_stddev_per_poi[best_poi] < ambiguity_thr
 
 def test_exploded(motif, poi, sa, max_motif_len, mu, sigma, fwd_expsumlogp, rev_expsumlogp, selection_thr, min_N=30, debug=False):
     to_test = IUPAC_TO_LIST[motif[0]][:]
@@ -550,19 +551,29 @@ def test_exploded(motif, poi, sa, max_motif_len, mu, sigma, fwd_expsumlogp, rev_
         return True
     
     means, Ns = suffix_array.motif_means(to_test, max_motif_len+1, fwd_expsumlogp, rev_expsumlogp, sa)
-    with warnings.catch_warnings():
-        warnings.filterwarnings('ignore', r'All-NaN slice encountered')
-        best = np.nanmin(means, axis=1)
-    mask = ~np.isnan(best)
-    results = pd.DataFrame(best, columns=['val'], index=to_test)[mask]
-    results['poi'] =  np.nanargmin(means[mask], axis=1)
-    results['N'] = Ns[mask][range(results['poi'].shape[0]), results['poi']]
-    Ns = np.clip(results['N'], 1, len(mu)-1)
-    results['stddevs'] = (results['val'] - mu[Ns]) / sigma[Ns]
+    no_sites = np.all(Ns == 0, axis=1)
+    pois = np.all(~np.isnan(means[~no_sites]), axis=0)
+    # instead of taking min over all array (best),
+    # take max over columns (repr. poi) and min over those
+    Ns = np.clip(Ns, 1, len(mu)-1)
+    stddevs = (means - mu[Ns]) / sigma[Ns]
+    stddevs[Ns < min_N] = np.nan # mask sites with low coverage
+    max_stddev_per_poi = stddevs[~no_sites][:, pois].max(axis=0)
+    best_poi = np.argmin(max_stddev_per_poi) # careful: best_pois refers to selection of pois, not a motif index!
     if debug:
-        print(results)
-    sel = results['N'] >= min_N
-    return np.all(results.loc[sel]['stddevs'] < selection_thr)
+        pois_idx = np.where(pois)[0]
+        to_test_ = [m for i,m in enumerate(to_test)]
+        to_test__ = []
+        for m in to_test_:
+            m = list(m)
+            for i in pois_idx:
+                m[i] = m[i].lower()
+            to_test__.append("".join(m))
+        print(pd.DataFrame(stddevs[~no_sites][:, pois].round(2),
+                           index=to_test__,
+                           columns=pois_idx))
+        print('best column:', best_poi, '= motif index', np.searchsorted(np.cumsum(pois), best_poi+1))
+    return max_stddev_per_poi[best_poi] < selection_thr
 
 def get_pois(motif):
     pois = []
@@ -585,7 +596,7 @@ def reduce_motifs(d, sa, max_motif_len, mu, sigma, fwd_expsumlogp, rev_expsumlog
     d['typeI'] = d.motif.str.contains('NN')
     # initial filtering
     if ambiguity_thr is not None:
-        d['pass'] = d.apply(lambda row: test_ambiguous(row.motif, row.poi, sa, max_motif_len, mu, sigma, fwd_expsumlogp, rev_expsumlogp, ambiguity_thr, ambiguity_quantile=ambiguity_quantile, min_N=ambiguity_cov), axis=1)
+        d['pass'] = d.apply(lambda row: test_ambiguous(row.motif, sa, max_motif_len, mu, sigma, fwd_expsumlogp, rev_expsumlogp, ambiguity_thr, ambiguity_quantile=ambiguity_quantile, min_N=ambiguity_cov), axis=1)
         for i,row in d.loc[d['pass'] == False].iterrows():
             logging.getLogger('comos').debug(f"excluded {row.motif}:{row.poi} ({row.N}, {row.stddevs:.2f}) : did not pass ambiguity filter")
         n_excluded = (d['pass'] == False).sum()
@@ -893,10 +904,10 @@ def reduce_motifs(d, sa, max_motif_len, mu, sigma, fwd_expsumlogp, rev_expsumlog
                         if stddevs < best[4]:
                             if stddevs < thr:
                                 if ambiguity_thr is not None:
-                                    if not test_ambiguous(motif, poi, sa, max_motif_len, mu, sigma, fwd_expsumlogp, rev_expsumlogp, ambiguity_thr, ambiguity_quantile=ambiguity_quantile, min_N=ambiguity_cov):
+                                    if not test_ambiguous(motif, sa, max_motif_len, mu, sigma, fwd_expsumlogp, rev_expsumlogp, ambiguity_thr, ambiguity_quantile=ambiguity_quantile, min_N=ambiguity_cov):
                                         if d.iloc[i].typeI:
-                                            if test_ambiguous(reverse_complement(motif), None, sa, max_motif_len, mu, sigma, fwd_expsumlogp, rev_expsumlogp, ambiguity_thr, ambiguity_quantile=ambiguity_quantile, min_N=ambiguity_cov):
-                                                logging.getLogger('comos').info(f'ambiguous test failed for combined motif {motif} but not its reverse complement.')
+                                            if test_ambiguous(reverse_complement(motif), sa, max_motif_len, mu, sigma, fwd_expsumlogp, rev_expsumlogp, ambiguity_thr, ambiguity_quantile=ambiguity_quantile, min_N=ambiguity_cov):
+                                                logging.getLogger('comos').info(f'ambiguous test failed for combined motif {motif} but not for its RC --> kept.')
                                             else:
                                                 continue
                                         else:
@@ -1095,7 +1106,7 @@ def main(args):
 
         for m,row in res.iterrows():
             print(f"\nAmbiguous-Test results for motif {m}:{int(row.poi)}")
-            passed = test_ambiguous(m, int(row.poi), sa, len(m), mu, sigma, fwd_expsumlogp, rev_expsumlogp, ambiguity_thr=-args.ambiguity_thr, ambiguity_quantile=args.ambiguity_quantile, min_N=args.ambiguity_cov, debug=True)
+            passed = test_ambiguous(m, sa, len(m), mu, sigma, fwd_expsumlogp, rev_expsumlogp, ambiguity_thr=-args.ambiguity_thr, ambiguity_quantile=args.ambiguity_quantile, min_N=args.ambiguity_cov, debug=True)
             print(passed)
             print(f"\nExploded-Test results for motif {m}:{int(row.poi)}")
             passed = test_exploded(m, int(row.poi), sa, len(m), mu, sigma, fwd_expsumlogp, rev_expsumlogp, args.selection_thr, debug=True)
