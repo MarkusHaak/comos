@@ -16,6 +16,7 @@ from Bio import SeqIO
 from scipy.optimize import curve_fit
 from scipy.stats import norm
 from tqdm import tqdm
+import networkx as nx
 
 import suffix_array
 
@@ -38,21 +39,22 @@ class ArgHelpFormatter(argparse.HelpFormatter):
 
 # dict storing rules for combining two IUPAC letters
 IUPAC_TO_IUPAC = {
-        "A" : {"A":"A", "C":"M", "G":"R", "T":"W", "M":"M", "R":"R", "W":"W", "S":"V", "Y":"H", "K":"D", "V":"V", "H":"H", "D":"D", "B":"N", "N":"N",},
-        "C" : {"A":"M", "C":"C", "G":"S", "T":"Y", "M":"M", "R":"V", "W":"H", "S":"S", "Y":"Y", "K":"B", "V":"V", "H":"H", "D":"N", "B":"B", "N":"N",},
-        "G" : {"A":"R", "C":"S", "G":"G", "T":"K", "M":"V", "R":"R", "W":"D", "S":"S", "Y":"B", "K":"K", "V":"V", "H":"N", "D":"D", "B":"B", "N":"N",},
-        "T" : {"A":"W", "C":"Y", "G":"K", "T":"T", "M":"H", "R":"D", "W":"W", "S":"B", "Y":"Y", "K":"K", "V":"N", "H":"H", "D":"D", "B":"B", "N":"N",},
-        "M" : {"A":"M", "C":"M", "G":"V", "T":"H", "M":"M", "R":"V", "W":"H", "S":"V", "Y":"H", "K":"N", "V":"V", "H":"H", "D":"N", "B":"N", "N":"N",},
-        "R" : {"A":"R", "C":"V", "G":"R", "T":"D", "M":"V", "R":"R", "W":"D", "S":"V", "Y":"N", "K":"D", "V":"V", "H":"N", "D":"D", "B":"N", "N":"N",},
-        "W" : {"A":"W", "C":"H", "G":"D", "T":"W", "M":"H", "R":"D", "W":"W", "S":"N", "Y":"H", "K":"D", "V":"N", "H":"H", "D":"D", "B":"N", "N":"N",},
-        "S" : {"A":"V", "C":"S", "G":"S", "T":"B", "M":"V", "R":"V", "W":"N", "S":"S", "Y":"B", "K":"B", "V":"V", "H":"N", "D":"N", "B":"B", "N":"N",},
-        "Y" : {"A":"H", "C":"Y", "G":"B", "T":"Y", "M":"H", "R":"N", "W":"H", "S":"B", "Y":"Y", "K":"B", "V":"N", "H":"H", "D":"N", "B":"B", "N":"N",},
-        "K" : {"A":"D", "C":"B", "G":"K", "T":"K", "M":"N", "R":"D", "W":"D", "S":"B", "Y":"B", "K":"K", "V":"N", "H":"N", "D":"D", "B":"B", "N":"N",},
-        "V" : {"A":"V", "C":"V", "G":"V", "T":"N", "M":"V", "R":"V", "W":"N", "S":"V", "Y":"N", "K":"N", "V":"V", "H":"N", "D":"N", "B":"N", "N":"N",},
-        "H" : {"A":"H", "C":"H", "G":"N", "T":"H", "M":"H", "R":"N", "W":"H", "S":"N", "Y":"H", "K":"N", "V":"N", "H":"H", "D":"N", "B":"N", "N":"N",},
-        "D" : {"A":"D", "C":"N", "G":"D", "T":"D", "M":"N", "R":"D", "W":"D", "S":"N", "Y":"N", "K":"D", "V":"N", "H":"N", "D":"D", "B":"N", "N":"N",},
-        "B" : {"A":"N", "C":"B", "G":"B", "T":"B", "M":"N", "R":"N", "W":"N", "S":"B", "Y":"B", "K":"B", "V":"N", "H":"N", "D":"N", "B":"B", "N":"N",},
-        "N" : {"A":"N", "C":"N", "G":"N", "T":"N", "M":"N", "R":"N", "W":"N", "S":"N", "Y":"N", "K":"N", "V":"N", "H":"N", "D":"N", "B":"N", "N":"N",},
+        "A" : {"A":"A", "C":"M", "G":"R", "T":"W", "M":"M", "R":"R", "W":"W", "S":"V", "Y":"H", "K":"D", "V":"V", "H":"H", "D":"D", "B":"N", "N":"N", " ":"A",},
+        "C" : {"A":"M", "C":"C", "G":"S", "T":"Y", "M":"M", "R":"V", "W":"H", "S":"S", "Y":"Y", "K":"B", "V":"V", "H":"H", "D":"N", "B":"B", "N":"N", " ":"C",},
+        "G" : {"A":"R", "C":"S", "G":"G", "T":"K", "M":"V", "R":"R", "W":"D", "S":"S", "Y":"B", "K":"K", "V":"V", "H":"N", "D":"D", "B":"B", "N":"N", " ":"G",},
+        "T" : {"A":"W", "C":"Y", "G":"K", "T":"T", "M":"H", "R":"D", "W":"W", "S":"B", "Y":"Y", "K":"K", "V":"N", "H":"H", "D":"D", "B":"B", "N":"N", " ":"T",},
+        "M" : {"A":"M", "C":"M", "G":"V", "T":"H", "M":"M", "R":"V", "W":"H", "S":"V", "Y":"H", "K":"N", "V":"V", "H":"H", "D":"N", "B":"N", "N":"N", " ":"M",},
+        "R" : {"A":"R", "C":"V", "G":"R", "T":"D", "M":"V", "R":"R", "W":"D", "S":"V", "Y":"N", "K":"D", "V":"V", "H":"N", "D":"D", "B":"N", "N":"N", " ":"R",},
+        "W" : {"A":"W", "C":"H", "G":"D", "T":"W", "M":"H", "R":"D", "W":"W", "S":"N", "Y":"H", "K":"D", "V":"N", "H":"H", "D":"D", "B":"N", "N":"N", " ":"W",},
+        "S" : {"A":"V", "C":"S", "G":"S", "T":"B", "M":"V", "R":"V", "W":"N", "S":"S", "Y":"B", "K":"B", "V":"V", "H":"N", "D":"N", "B":"B", "N":"N", " ":"S",},
+        "Y" : {"A":"H", "C":"Y", "G":"B", "T":"Y", "M":"H", "R":"N", "W":"H", "S":"B", "Y":"Y", "K":"B", "V":"N", "H":"H", "D":"N", "B":"B", "N":"N", " ":"Y",},
+        "K" : {"A":"D", "C":"B", "G":"K", "T":"K", "M":"N", "R":"D", "W":"D", "S":"B", "Y":"B", "K":"K", "V":"N", "H":"N", "D":"D", "B":"B", "N":"N", " ":"K",},
+        "V" : {"A":"V", "C":"V", "G":"V", "T":"N", "M":"V", "R":"V", "W":"N", "S":"V", "Y":"N", "K":"N", "V":"V", "H":"N", "D":"N", "B":"N", "N":"N", " ":"V",},
+        "H" : {"A":"H", "C":"H", "G":"N", "T":"H", "M":"H", "R":"N", "W":"H", "S":"N", "Y":"H", "K":"N", "V":"N", "H":"H", "D":"N", "B":"N", "N":"N", " ":"H",},
+        "D" : {"A":"D", "C":"N", "G":"D", "T":"D", "M":"N", "R":"D", "W":"D", "S":"N", "Y":"N", "K":"D", "V":"N", "H":"N", "D":"D", "B":"N", "N":"N", " ":"D",},
+        "B" : {"A":"N", "C":"B", "G":"B", "T":"B", "M":"N", "R":"N", "W":"N", "S":"B", "Y":"B", "K":"B", "V":"N", "H":"N", "D":"N", "B":"B", "N":"N", " ":"B",},
+        "N" : {"A":"N", "C":"N", "G":"N", "T":"N", "M":"N", "R":"N", "W":"N", "S":"N", "Y":"N", "K":"N", "V":"N", "H":"N", "D":"N", "B":"N", "N":"N", " ":"N",},
+        " " : {"A":"A", "C":"C", "G":"G", "T":"T", "M":"M", "R":"R", "W":"W", "S":"S", "Y":"Y", "K":"K", "V":"V", "H":"H", "D":"D", "B":"B", "N":"N", " ":" ",}
     }
 
 IUPAC_TO_LIST = {
@@ -419,23 +421,28 @@ def plot_motif_scores(results, mu, sigma, thr=6., savepath=None):
 def motif_contains(m1, m2):
     """
     Checks if IUPAC motif m2 is identically contained in IUPAC motif m1.
-    Returns a tuple (idx, ident), where
-    idx is the first index of m2 in m1 if m1 is contained in m2 and None if it is not contained
-    ident is True if the substring of m1 at idx of length len(m2) is identical to m2
+    Returns a tuple (idx, ident, diff), where
+    idx : first index of m2 in m1 if m1 is contained in m2 and None if it is not contained
+    ident : True if the substring of m1 at idx of length len(m2) is identical to m2
+    diff : non-identical positions between m1 and m2 relative to m2 if m2 is contained in m1
     
     Examples:
-    ATC is identically contained in CATC at index 1
-    ATC is non-identically contained in CATS at index 1
+    ATC is identically contained in CATC at index 1, diff=[-1]
+    ATC is non-identically contained in CATS at index 1, diff=[-1, 2]
+    CAT is identically contained in CATS at index 0, diff=[3]
     ATN is not contained in CATS
     """
     lm1, lm2 = len(m1), len(m2)
     if lm2 > len(m1):
-        return None, False
+        return None, False, None
     for i in range(lm1 - lm2 + 1):
         identical = True
+        diff = [j for j in range(-i,0)]
         for j in range(lm2):
             if m1[i+j] != m2[j]:
                 identical = False
+                #diff += 1
+                diff.append(j)
             if m2[j] != 'N':
                 if m1[i+j] == 'N':
                     # do not match agaist TypeI motif gaps
@@ -443,8 +450,8 @@ def motif_contains(m1, m2):
                 if m1[i+j] != IUPAC_TO_IUPAC[m1[i+j]][m2[j]]:
                     break
         else:
-            return i, identical
-    return None, False
+            return i, identical, diff + [j for j in range(lm2,lm1-i)]
+    return None, False, None
 
 def motif_diff(m1, m2, m2_idx):
     """
@@ -463,6 +470,24 @@ def motif_diff(m1, m2, m2_idx):
             # These might not be identical to m2, e.g. ASST instead of ACGT
             diff.append(m1[i])
     return "".join(diff).strip('N') 
+
+def motif_diff_multi(mshrt, mlong_and_idx):
+    to_combine = []
+    padding = [0,0]
+    for mlong, mshrt_idx in mlong_and_idx:
+        padding[0] = max(padding[0], mshrt_idx)
+        padding[1] = max(padding[1], len(mlong) - len(mshrt) - mshrt_idx)
+    #print(padding)
+    for mlong, mshrt_idx in mlong_and_idx:
+        to_combine.append(" "*(padding[0] - mshrt_idx) + mlong.replace("N", " ") + " "*(padding[1] - (len(mlong) - len(mshrt) - mshrt_idx)))
+    #print(to_combine)
+    combined_motif = to_combine[0]
+    for m in to_combine[1:]:
+        combined_motif = combine_IUPAC(combined_motif, m)
+    combined_motif = combined_motif.replace(" ", "N")
+    #print(combined_motif)
+    
+    return motif_diff(combined_motif, mshrt, padding[0])
 
 def combine_IUPAC(m1, m2):
     assert len(m1) == len(m2)
@@ -591,7 +616,27 @@ def get_num_absorbed(motif, absorbed):
             n += get_num_absorbed(m, absorbed)
         return n
 
-def reduce_motifs(d, sa, max_motif_len, mu, sigma, fwd_expsumlogp, rev_expsumlogp, thr, ambiguity_thr=-3., ambiguity_quantile=0.8, ambiguity_cov=50, absorbed=None):
+def prune_edges(G, edges):
+    pruned = []
+    nodes = []
+    while edges:
+        for u,v in edges:
+            G.remove_edge(u,v)
+            nodes.append(v)
+        edges = []
+        for v in nodes:
+            if G.in_degree(v) == 0:
+                for edge in G.out_edges(v):
+                    edges.append(edge)
+                #G.remove_node(v)
+                #pruned.append(v)
+        #nodes = []
+    for v in nodes:
+        G.remove_node(v)
+        pruned.append(v)
+    return pruned
+
+def reduce_motifs(d, sa, max_motif_len, mu, sigma, fwd_expsumlogp, rev_expsumlogp, thr, ambiguity_thr=-3., ambiguity_quantile=0.8, ambiguity_cov=50):
     d = d.copy().sort_values(['N','stddevs'], ascending=[False,True])
     d['typeI'] = d.motif.str.contains('NN')
     # initial filtering
@@ -603,159 +648,216 @@ def reduce_motifs(d, sa, max_motif_len, mu, sigma, fwd_expsumlogp, rev_expsumlog
         if n_excluded:
             logging.info(f"Excluded {n_excluded} motifs because they did not pass ambiguity testing.")
         d = d.loc[d['pass']].drop(['pass'], axis=1)
-    logging.info(f"{len(d)} motifs after ambiguity testing:")
+    logging.getLogger('comos').info(f"{len(d)} motifs after ambiguity testing:")
     print(d)
     
-    changed = True
-    tested = set()
-    if absorbed is None:
-        absorbed = {}
-    while changed == True:
-        changed = False
-        for i in range(0,len(d)):
-            for j in range(i+1,len(d)):
-                if d.iloc[i].typeI != d.iloc[j].typeI:
-                    continue
-                if ((d.iloc[i].motif, d.iloc[i].poi), (d.iloc[j].motif, d.iloc[j].poi)) in tested:
-                    continue
-                tested.add(((d.iloc[i].motif, d.iloc[i].poi), (d.iloc[j].motif, d.iloc[j].poi)))
+    # removing nested canonical motifs
+    d['mlen'] = d.motif.str.len()
+    d['slen'] = d.motif.str.replace('N','').str.len()
+    # d.motif.str.extract(r'([ACGT]+)(N*)([ACGT]*)').rename(columns={0:'up', 1:'gap',2:'down'})
+    d = d.sort_values(['mlen', 'slen']).reset_index(drop=True)
+    G = nx.DiGraph()
+    for i in range(0,len(d)):
+        G.add_node(i)
+        for j in range(i+1,len(d)):
+            # due to sorting, motif i is ensured to be smaller or equally long than motif j
+            if d.iloc[i].typeI != d.iloc[j].typeI:
+                continue
+            elif d.iloc[i].slen > d.iloc[j].slen:
+                # ensure that number of specific bases is smaller for motif i than for motif j (only relevant for TypeI)
+                continue
+            # check if motif i is contained in motif j
+            idx, ident, diff = motif_contains(d.iloc[j].motif, d.iloc[i].motif)
+            if idx is not None:
+                G.add_edge(i, j, weight=len(diff), diff=diff, idx=idx)
 
-                # check if one is contained in the other (e.g. ATGC and CATGC)
-                # if this is the case, then check if the additional
-                # base(s) are required (check if DATGC < selection_thr)
-                if len(d.iloc[i].motif) - d.iloc[i].motif.count('N') == len(d.iloc[j].motif) - d.iloc[j].motif.count('N'): #if len(d.iloc[i].motif) == len(d.iloc[j].motif):
-                    idx, ident = motif_contains(d.iloc[j].motif, d.iloc[i].motif)
-                    if idx is not None:
-                        # mi is equally long than mj and contained in mj
-                        logging.getLogger('comos').debug(f"dropped {d.iloc[i].motif}:{d.iloc[i].poi} ({d.iloc[i].N}, {d.iloc[i].stddevs:.2f}), contained in {d.iloc[j].motif}:{d.iloc[j].poi} ({d.iloc[j].N}, {d.iloc[j].stddevs:.2f})")
-                        # note which motifs get absorbed
-                        if d.iloc[j].motif not in absorbed:
-                            absorbed[d.iloc[j].motif] = []
-                        absorbed[d.iloc[j].motif].append((d.iloc[i].motif, d.iloc[i].stddevs))
-                        d = d.drop(d.index[i])
-                        changed = True
-                        break
-                    idx, ident = motif_contains(d.iloc[i].motif, d.iloc[j].motif)
-                    if idx is not None:
-                        # mj is equally long than mi and contained in mi
-                        logging.getLogger('comos').debug(f"dropped {d.iloc[j].motif}:{d.iloc[j].poi} ({d.iloc[j].N}, {d.iloc[j].stddevs:.2f}), contained in {d.iloc[i].motif}:{d.iloc[i].poi} ({d.iloc[i].N}, {d.iloc[i].stddevs:.2f})")
-                        # note which motifs get absorbed
-                        if d.iloc[i].motif not in absorbed:
-                            absorbed[d.iloc[i].motif] = []
-                        absorbed[d.iloc[i].motif].append((d.iloc[j].motif, d.iloc[j].stddevs))
-                        d = d.drop(d.index[j])
-                        changed = True
-                        break
-                elif len(d.iloc[i].motif) - d.iloc[i].motif.count('N') < len(d.iloc[j].motif) - d.iloc[j].motif.count('N'): #elif len(d.iloc[i].motif) < len(d.iloc[j].motif):
-                    idx, ident = motif_contains(d.iloc[j].motif, d.iloc[i].motif)
-                    if idx is not None:# and ident == True:
-                        # mi is shorter than mj and contained in mj
-                        # check if mj should in fact be shortened, else drop mi
-                        m_diff = motif_diff(d.iloc[j].motif, d.iloc[i].motif, idx)
+    
+    n_sGs = len([G.subgraph(c) for c in nx.connected_components(G.to_undirected())])
+    G.remove_edges_from([(f, t) for f,t,d in G.edges.data() if d['weight'] > 1])
+    sGs = [nx.DiGraph(G.subgraph(c)) for c in nx.connected_components(G.to_undirected())]
+    if len(sGs) != n_sGs:
+        # TODO : handle this, e.g. by keeping "longest" paths between any two nodes?
+        logging.getLogger('comos').warning(f"Unhandled case: Number of subgraphs decreased from {n_sGs} to {len(sGs)} by removing edges with >1 edit distance between motifs.")
+    logging.getLogger('comos').info(f"{len(sGs)} subgraphs in nested motif network")
+
+    for sG in sGs:
+        #print(d.loc[list(sG)].sort_index())
+        #fig,ax = plt.subplots(1,1,figsize=(6,4))
+        #nx.draw(sG, ax=ax)
+        #plt.show()
+
+        # resolve graph, starting with root nodes
+        while len(sG.edges):
+            root_nodes = [n for n,deg in sG.in_degree() if deg==0]
+            for root_node in root_nodes:
+                root_motif = d.loc[root_node, 'motif']
+                # sort outgoing edges by the position that is over-specifying the shorter motif
+                by_index = {}
+                for edge in sG.out_edges(root_node):
+                    edge_data = sG.get_edge_data(*edge)
+                    if len(edge_data['diff']) != 1:
+                        # at the moment, this should not be possible because each edge has edit distance 1
+                        logging.getLogger('comos').error(f"unhandled exception: motifs for {root_motif} and {d.loc[edge[1], 'motif']} differ in more than one position")
+                        exit(1)
+                    if edge_data['diff'][0] not in by_index:
+                        by_index[edge_data['diff'][0]] = {"edges":[], "data":[]}
+                    by_index[edge_data['diff'][0]]['edges'].append(edge)
+                    by_index[edge_data['diff'][0]]['data'].append((d.loc[edge[1], 'motif'], edge_data['idx']))
+                
+                # for each position indipendently, determine if the shorter motif or all longer motifs shall be pruned
+                drop_root_node = False
+                for idx in by_index:
+                    m_diff = motif_diff_multi(root_motif, by_index[idx]['data'])
+                    if m_diff == root_motif:
+                        # prune all longer motifs
+                        pruned = prune_edges(sG, by_index[idx]['edges'])
+                        d = d.drop(pruned)
+                        logging.getLogger('comos').info(f"kept root node {d.loc[root_node, 'motif']}, pruned {len(pruned)} nodes")
+                    else:
                         means, Ns = suffix_array.motif_means([m_diff], len(m_diff), fwd_expsumlogp, rev_expsumlogp, sa)
                         with warnings.catch_warnings():
                             warnings.filterwarnings('ignore', r'All-NaN slice encountered')
                             best = np.nanmin(means[0])
                         if np.isnan(best):
-                            # no A or C in motif sequence, diff motif is not valid
-                            # do not shorten mj, drop mi
-                            logging.getLogger('comos').debug(f"dropped {d.iloc[i].motif}:{d.iloc[i].poi} ({d.iloc[i].N}, {d.iloc[i].stddevs:.2f}), contained in {d.iloc[j].motif}:{d.iloc[j].poi} ({d.iloc[j].N}, {d.iloc[j].stddevs:.2f})")
-                            # note which motifs get absorbed
-                            if d.iloc[j].motif not in absorbed:
-                                absorbed[d.iloc[j].motif] = []
-                            absorbed[d.iloc[j].motif].append((d.iloc[i].motif, d.iloc[i].stddevs))
-                            d = d.drop(d.index[i])
-                            changed = True
-                            break
+                            logging.getLogger('comos').error("unhandled exception: no A or C in difference motif")
+                            exit(1)
                         poi = np.nanargmin(means[0])
                         N = min(Ns[0][poi], len(mu)-1)
                         stddev = (best - mu[N]) / sigma[N]
                         if stddev >= thr:
-                            # drop mi
+                            # drop root motif, keep longer ones
+                            for u,v in by_index[idx]['edges']:
+                                G.remove_edge(u,v)
+                            logging.getLogger('comos').info(f"{m_diff} : {stddev} --> drop root node {d.loc[root_node, 'motif']} for {[d.loc[v, 'motif'] for u,v in by_index[idx]['edges']]}")
+                            drop_root_node = True
+                        else:
+                            # prune all longer motifs
+                            pruned = prune_edges(sG, by_index[idx]['edges'])
+                            d = d.drop(pruned)
+                            logging.getLogger('comos').info(f"{m_diff} : {stddev} --> kept root node {d.loc[root_node, 'motif']}, pruned {len(pruned)} nodes")
+                if drop_root_node:
+                    sG.remove_node(root_node)
+                    d = d.drop(root_node)
+            #fig,ax = plt.subplots(1,1,figsize=(6,4))
+            #nx.draw(sG, ax=ax)
+            #plt.show()
+    d = d.drop(columns=['mlen', 'slen'])
+    
+    if 0:
+        changed = True
+        tested = set()
+        while changed == True:
+            changed = False
+            for i in range(0,len(d)):
+                for j in range(i+1,len(d)):
+                    if d.iloc[i].typeI != d.iloc[j].typeI:
+                        continue
+                    if ((d.iloc[i].motif, d.iloc[i].poi), (d.iloc[j].motif, d.iloc[j].poi)) in tested:
+                        continue
+                    tested.add(((d.iloc[i].motif, d.iloc[i].poi), (d.iloc[j].motif, d.iloc[j].poi)))
+
+                    # check if one is contained in the other (e.g. ATGC and CATGC)
+                    # if this is the case, then check if the additional
+                    # base(s) are required (check if DATGC < selection_thr)
+                    if len(d.iloc[i].motif) - d.iloc[i].motif.count('N') == len(d.iloc[j].motif) - d.iloc[j].motif.count('N'): #if len(d.iloc[i].motif) == len(d.iloc[j].motif):
+                        idx, ident, _ = motif_contains(d.iloc[j].motif, d.iloc[i].motif)
+                        if idx is not None:
+                            # mi is equally long than mj and contained in mj
                             logging.getLogger('comos').debug(f"dropped {d.iloc[i].motif}:{d.iloc[i].poi} ({d.iloc[i].N}, {d.iloc[i].stddevs:.2f}), contained in {d.iloc[j].motif}:{d.iloc[j].poi} ({d.iloc[j].N}, {d.iloc[j].stddevs:.2f})")
-                            # note which motifs get absorbed
-                            if d.iloc[j].motif not in absorbed:
-                                absorbed[d.iloc[j].motif] = []
-                            absorbed[d.iloc[j].motif].append((d.iloc[i].motif, d.iloc[i].stddevs))
                             d = d.drop(d.index[i])
                             changed = True
                             break
-                        else:
-                            if ident:
-                                # drop mj
-                                logging.getLogger('comos').debug(f"dropped {d.iloc[j].motif}:{d.iloc[j].poi} ({d.iloc[j].N}, {d.iloc[j].stddevs:.2f}) for shorter, significant motif {d.iloc[i].motif}:{d.iloc[i].poi} ({d.iloc[i].N}, {d.iloc[i].stddevs:.2f})")
-                                # note which motifs get absorbed
-                                if d.iloc[i].motif not in absorbed:
-                                    absorbed[d.iloc[i].motif] = []
-                                absorbed[d.iloc[i].motif].append((d.iloc[j].motif, d.iloc[j].stddevs))
-                                d = d.drop(d.index[j])
+                        idx, ident, _ = motif_contains(d.iloc[i].motif, d.iloc[j].motif)
+                        if idx is not None:
+                            # mj is equally long than mi and contained in mi
+                            logging.getLogger('comos').debug(f"dropped {d.iloc[j].motif}:{d.iloc[j].poi} ({d.iloc[j].N}, {d.iloc[j].stddevs:.2f}), contained in {d.iloc[i].motif}:{d.iloc[i].poi} ({d.iloc[i].N}, {d.iloc[i].stddevs:.2f})")
+                            d = d.drop(d.index[j])
+                            changed = True
+                            break
+                    elif len(d.iloc[i].motif) - d.iloc[i].motif.count('N') < len(d.iloc[j].motif) - d.iloc[j].motif.count('N'): #elif len(d.iloc[i].motif) < len(d.iloc[j].motif):
+                        idx, ident, _ = motif_contains(d.iloc[j].motif, d.iloc[i].motif)
+                        if idx is not None:# and ident == True:
+                            # mi is shorter than mj and contained in mj
+                            # check if mj should in fact be shortened, else drop mi
+                            m_diff = motif_diff(d.iloc[j].motif, d.iloc[i].motif, idx)
+                            means, Ns = suffix_array.motif_means([m_diff], len(m_diff), fwd_expsumlogp, rev_expsumlogp, sa)
+                            with warnings.catch_warnings():
+                                warnings.filterwarnings('ignore', r'All-NaN slice encountered')
+                                best = np.nanmin(means[0])
+                            if np.isnan(best):
+                                # no A or C in motif sequence, diff motif is not valid
+                                # do not shorten mj, drop mi
+                                logging.getLogger('comos').debug(f"dropped {d.iloc[i].motif}:{d.iloc[i].poi} ({d.iloc[i].N}, {d.iloc[i].stddevs:.2f}), contained in {d.iloc[j].motif}:{d.iloc[j].poi} ({d.iloc[j].N}, {d.iloc[j].stddevs:.2f})")
+                                d = d.drop(d.index[i])
                                 changed = True
                                 break
-                            else:
-                                # TODO: handle this case
-                                # probably mj should be shortened. But likely this happens 
-                                # later in motif combination anyways
-                                pass
-                else:
-                    idx, ident = motif_contains(d.iloc[i].motif, d.iloc[j].motif)
-                    if idx is not None:# and ident == True:
-                        # mj is shorter than mi and contained in mi
-                        # check if mi should in fact be shortened, else drop mj
-                        m_diff = motif_diff(d.iloc[i].motif, d.iloc[j].motif, idx)
-                        means, Ns = suffix_array.motif_means([m_diff], len(m_diff), fwd_expsumlogp, rev_expsumlogp, sa)
-                        with warnings.catch_warnings():
-                            warnings.filterwarnings('ignore', r'All-NaN slice encountered')
-                            best = np.nanmin(means[0])
-                        if np.isnan(best):
-                            # no A or C in motif sequence, diff motif is not valid
-                            # do not shorten mj, drop mj
-                            logging.getLogger('comos').debug(f"dropped {d.iloc[j].motif}:{d.iloc[j].poi} ({d.iloc[j].N}, {d.iloc[j].stddevs:.2f}), contained in {d.iloc[i].motif}:{d.iloc[i].poi} ({d.iloc[i].N}, {d.iloc[i].stddevs:.2f})")
-                            # note which motifs get absorbed
-                            if d.iloc[i].motif not in absorbed:
-                                absorbed[d.iloc[i].motif] = []
-                            absorbed[d.iloc[i].motif].append((d.iloc[j].motif, d.iloc[j].stddevs))
-                            d = d.drop(d.index[j])
-                            changed = True
-                            break
-                        poi = np.nanargmin(means[0])
-                        N = min(Ns[0][poi], len(mu)-1)
-                        stddev = (best - mu[N]) / sigma[N]
-                        if stddev >= thr:
-                            # drop mj
-                            logging.getLogger('comos').debug(f"dropped {d.iloc[j].motif}:{d.iloc[j].poi} ({d.iloc[j].N}, {d.iloc[j].stddevs:.2f}), contained in {d.iloc[i].motif}:{d.iloc[i].poi} ({d.iloc[i].N}, {d.iloc[i].stddevs:.2f})")
-                            # note which motifs get absorbed
-                            if d.iloc[i].motif not in absorbed:
-                                absorbed[d.iloc[i].motif] = []
-                            absorbed[d.iloc[i].motif].append((d.iloc[j].motif, d.iloc[j].stddevs))
-                            d = d.drop(d.index[j])
-                            changed = True
-                            break
-                        else:
-                            if ident:
+                            poi = np.nanargmin(means[0])
+                            N = min(Ns[0][poi], len(mu)-1)
+                            stddev = (best - mu[N]) / sigma[N]
+                            if stddev >= thr:
                                 # drop mi
-                                logging.getLogger('comos').debug(f"dropped {d.iloc[i].motif}:{d.iloc[i].poi} ({d.iloc[i].N}, {d.iloc[i].stddevs:.2f}) for shorter, significant motif {d.iloc[j].motif}:{d.iloc[j].poi} ({d.iloc[j].N}, {d.iloc[j].stddevs:.2f})")
-                                # note which motifs get absorbed
-                                if d.iloc[j].motif not in absorbed:
-                                    absorbed[d.iloc[j].motif] = []
-                                absorbed[d.iloc[j].motif].append((d.iloc[i].motif, d.iloc[i].stddevs))
+                                logging.getLogger('comos').debug(f"dropped {d.iloc[i].motif}:{d.iloc[i].poi} ({d.iloc[i].N}, {d.iloc[i].stddevs:.2f}), contained in {d.iloc[j].motif}:{d.iloc[j].poi} ({d.iloc[j].N}, {d.iloc[j].stddevs:.2f})")
                                 d = d.drop(d.index[i])
                                 changed = True
                                 break
                             else:
-                                # TODO: handle this case
-                                # probably mj should be shortened. But likely this happens 
-                                # later in motif combination anyways
-                                pass
-            if changed:
-                break
+                                if ident:
+                                    # drop mj
+                                    logging.getLogger('comos').debug(f"dropped {d.iloc[j].motif}:{d.iloc[j].poi} ({d.iloc[j].N}, {d.iloc[j].stddevs:.2f}) for shorter, significant motif {d.iloc[i].motif}:{d.iloc[i].poi} ({d.iloc[i].N}, {d.iloc[i].stddevs:.2f})")
+                                    d = d.drop(d.index[j])
+                                    changed = True
+                                    break
+                                else:
+                                    # TODO: handle this case
+                                    # probably mj should be shortened. But likely this happens 
+                                    # later in motif combination anyways
+                                    pass
+                    else:
+                        idx, ident, _ = motif_contains(d.iloc[i].motif, d.iloc[j].motif)
+                        if idx is not None:# and ident == True:
+                            # mj is shorter than mi and contained in mi
+                            # check if mi should in fact be shortened, else drop mj
+                            m_diff = motif_diff(d.iloc[i].motif, d.iloc[j].motif, idx)
+                            means, Ns = suffix_array.motif_means([m_diff], len(m_diff), fwd_expsumlogp, rev_expsumlogp, sa)
+                            with warnings.catch_warnings():
+                                warnings.filterwarnings('ignore', r'All-NaN slice encountered')
+                                best = np.nanmin(means[0])
+                            if np.isnan(best):
+                                # no A or C in motif sequence, diff motif is not valid
+                                # do not shorten mj, drop mj
+                                logging.getLogger('comos').debug(f"dropped {d.iloc[j].motif}:{d.iloc[j].poi} ({d.iloc[j].N}, {d.iloc[j].stddevs:.2f}), contained in {d.iloc[i].motif}:{d.iloc[i].poi} ({d.iloc[i].N}, {d.iloc[i].stddevs:.2f})")
+                                d = d.drop(d.index[j])
+                                changed = True
+                                break
+                            poi = np.nanargmin(means[0])
+                            N = min(Ns[0][poi], len(mu)-1)
+                            stddev = (best - mu[N]) / sigma[N]
+                            if stddev >= thr:
+                                # drop mj
+                                logging.getLogger('comos').debug(f"dropped {d.iloc[j].motif}:{d.iloc[j].poi} ({d.iloc[j].N}, {d.iloc[j].stddevs:.2f}), contained in {d.iloc[i].motif}:{d.iloc[i].poi} ({d.iloc[i].N}, {d.iloc[i].stddevs:.2f})")
+                                d = d.drop(d.index[j])
+                                changed = True
+                                break
+                            else:
+                                if ident:
+                                    # drop mi
+                                    logging.getLogger('comos').debug(f"dropped {d.iloc[i].motif}:{d.iloc[i].poi} ({d.iloc[i].N}, {d.iloc[i].stddevs:.2f}) for shorter, significant motif {d.iloc[j].motif}:{d.iloc[j].poi} ({d.iloc[j].N}, {d.iloc[j].stddevs:.2f})")
+                                    d = d.drop(d.index[i])
+                                    changed = True
+                                    break
+                                else:
+                                    # TODO: handle this case
+                                    # probably mj should be shortened. But likely this happens 
+                                    # later in motif combination anyways
+                                    pass
+                if changed:
+                    break
 
     logging.info(f"{len(d)} after removing nested canonical motifs:")
     print(d)
 
     changed = True
     tested = set()
-    if absorbed is None:
-        absorbed = {}
     while changed == True:
         changed = False
         for i in range(0,len(d)):
@@ -770,30 +872,22 @@ def reduce_motifs(d, sa, max_motif_len, mu, sigma, fwd_expsumlogp, rev_expsumlog
                     # if this is the case, then check if the additional
                     # base(s) are required (check if DATGC < selection_thr)
                     if len(d.iloc[i].motif) - d.iloc[i].motif.count('N') == len(d.iloc[j].motif) - d.iloc[j].motif.count('N'): #if len(d.iloc[i].motif) == len(d.iloc[j].motif):
-                        idx, ident = motif_contains(d.iloc[j].motif, d.iloc[i].motif)
+                        idx, ident, _ = motif_contains(d.iloc[j].motif, d.iloc[i].motif)
                         if idx is not None:
                             # mi is equally long than mj and contained in mj
                             logging.getLogger('comos').debug(f"dropped {d.iloc[i].motif}:{d.iloc[i].poi} ({d.iloc[i].N}, {d.iloc[i].stddevs:.2f}), contained in {d.iloc[j].motif}:{d.iloc[j].poi} ({d.iloc[j].N}, {d.iloc[j].stddevs:.2f})")
-                            # note which motifs get absorbed
-                            if d.iloc[j].motif not in absorbed:
-                                absorbed[d.iloc[j].motif] = []
-                            absorbed[d.iloc[j].motif].append((d.iloc[i].motif, d.iloc[i].stddevs))
                             d = d.drop(d.index[i])
                             changed = True
                             break
-                        idx, ident = motif_contains(d.iloc[i].motif, d.iloc[j].motif)
+                        idx, ident, _ = motif_contains(d.iloc[i].motif, d.iloc[j].motif)
                         if idx is not None:
                             # mj is equally long than mi and contained in mi
                             logging.getLogger('comos').debug(f"dropped {d.iloc[j].motif}:{d.iloc[j].poi} ({d.iloc[j].N}, {d.iloc[j].stddevs:.2f}), contained in {d.iloc[i].motif}:{d.iloc[i].poi} ({d.iloc[i].N}, {d.iloc[i].stddevs:.2f})")
-                            # note which motifs get absorbed
-                            if d.iloc[i].motif not in absorbed:
-                                absorbed[d.iloc[i].motif] = []
-                            absorbed[d.iloc[i].motif].append((d.iloc[j].motif, d.iloc[j].stddevs))
                             d = d.drop(d.index[j])
                             changed = True
                             break
                     elif len(d.iloc[i].motif) - d.iloc[i].motif.count('N') < len(d.iloc[j].motif) - d.iloc[j].motif.count('N'): #elif len(d.iloc[i].motif) < len(d.iloc[j].motif):
-                        idx, ident = motif_contains(d.iloc[j].motif, d.iloc[i].motif)
+                        idx, ident, _ = motif_contains(d.iloc[j].motif, d.iloc[i].motif)
                         if idx is not None:# and ident == True:
                             # mi is shorter than mj and contained in mj
                             # check if mj should in fact be shortened, else drop mi
@@ -806,10 +900,6 @@ def reduce_motifs(d, sa, max_motif_len, mu, sigma, fwd_expsumlogp, rev_expsumlog
                                 # no A or C in motif sequence, diff motif is not valid
                                 # do not shorten mj, drop mi
                                 logging.getLogger('comos').debug(f"dropped {d.iloc[i].motif}:{d.iloc[i].poi} ({d.iloc[i].N}, {d.iloc[i].stddevs:.2f}), contained in {d.iloc[j].motif}:{d.iloc[j].poi} ({d.iloc[j].N}, {d.iloc[j].stddevs:.2f})")
-                                # note which motifs get absorbed
-                                if d.iloc[j].motif not in absorbed:
-                                    absorbed[d.iloc[j].motif] = []
-                                absorbed[d.iloc[j].motif].append((d.iloc[i].motif, d.iloc[i].stddevs))
                                 d = d.drop(d.index[i])
                                 changed = True
                                 break
@@ -819,10 +909,6 @@ def reduce_motifs(d, sa, max_motif_len, mu, sigma, fwd_expsumlogp, rev_expsumlog
                             if stddev >= thr:
                                 # drop mi
                                 logging.getLogger('comos').debug(f"dropped {d.iloc[i].motif}:{d.iloc[i].poi} ({d.iloc[i].N}, {d.iloc[i].stddevs:.2f}), contained in {d.iloc[j].motif}:{d.iloc[j].poi} ({d.iloc[j].N}, {d.iloc[j].stddevs:.2f})")
-                                # note which motifs get absorbed
-                                if d.iloc[j].motif not in absorbed:
-                                    absorbed[d.iloc[j].motif] = []
-                                absorbed[d.iloc[j].motif].append((d.iloc[i].motif, d.iloc[i].stddevs))
                                 d = d.drop(d.index[i])
                                 changed = True
                                 break
@@ -830,10 +916,6 @@ def reduce_motifs(d, sa, max_motif_len, mu, sigma, fwd_expsumlogp, rev_expsumlog
                                 if ident:
                                     # drop mj
                                     logging.getLogger('comos').debug(f"dropped {d.iloc[j].motif}:{d.iloc[j].poi} ({d.iloc[j].N}, {d.iloc[j].stddevs:.2f}) for shorter, significant motif {d.iloc[i].motif}:{d.iloc[i].poi} ({d.iloc[i].N}, {d.iloc[i].stddevs:.2f})")
-                                    # note which motifs get absorbed
-                                    if d.iloc[i].motif not in absorbed:
-                                        absorbed[d.iloc[i].motif] = []
-                                    absorbed[d.iloc[i].motif].append((d.iloc[j].motif, d.iloc[j].stddevs))
                                     d = d.drop(d.index[j])
                                     changed = True
                                     break
@@ -843,7 +925,7 @@ def reduce_motifs(d, sa, max_motif_len, mu, sigma, fwd_expsumlogp, rev_expsumlog
                                     # later in motif combination anyways
                                     pass
                     else:
-                        idx, ident = motif_contains(d.iloc[i].motif, d.iloc[j].motif)
+                        idx, ident, _ = motif_contains(d.iloc[i].motif, d.iloc[j].motif)
                         if idx is not None:# and ident == True:
                             # mj is shorter than mi and contained in mi
                             # check if mi should in fact be shortened, else drop mj
@@ -856,10 +938,6 @@ def reduce_motifs(d, sa, max_motif_len, mu, sigma, fwd_expsumlogp, rev_expsumlog
                                 # no A or C in motif sequence, diff motif is not valid
                                 # do not shorten mj, drop mj
                                 logging.getLogger('comos').debug(f"dropped {d.iloc[j].motif}:{d.iloc[j].poi} ({d.iloc[j].N}, {d.iloc[j].stddevs:.2f}), contained in {d.iloc[i].motif}:{d.iloc[i].poi} ({d.iloc[i].N}, {d.iloc[i].stddevs:.2f})")
-                                # note which motifs get absorbed
-                                if d.iloc[i].motif not in absorbed:
-                                    absorbed[d.iloc[i].motif] = []
-                                absorbed[d.iloc[i].motif].append((d.iloc[j].motif, d.iloc[j].stddevs))
                                 d = d.drop(d.index[j])
                                 changed = True
                                 break
@@ -869,10 +947,6 @@ def reduce_motifs(d, sa, max_motif_len, mu, sigma, fwd_expsumlogp, rev_expsumlog
                             if stddev >= thr:
                                 # drop mj
                                 logging.getLogger('comos').debug(f"dropped {d.iloc[j].motif}:{d.iloc[j].poi} ({d.iloc[j].N}, {d.iloc[j].stddevs:.2f}), contained in {d.iloc[i].motif}:{d.iloc[i].poi} ({d.iloc[i].N}, {d.iloc[i].stddevs:.2f})")
-                                # note which motifs get absorbed
-                                if d.iloc[i].motif not in absorbed:
-                                    absorbed[d.iloc[i].motif] = []
-                                absorbed[d.iloc[i].motif].append((d.iloc[j].motif, d.iloc[j].stddevs))
                                 d = d.drop(d.index[j])
                                 changed = True
                                 break
@@ -880,10 +954,6 @@ def reduce_motifs(d, sa, max_motif_len, mu, sigma, fwd_expsumlogp, rev_expsumlog
                                 if ident:
                                     # drop mi
                                     logging.getLogger('comos').debug(f"dropped {d.iloc[i].motif}:{d.iloc[i].poi} ({d.iloc[i].N}, {d.iloc[i].stddevs:.2f}) for shorter, significant motif {d.iloc[j].motif}:{d.iloc[j].poi} ({d.iloc[j].N}, {d.iloc[j].stddevs:.2f})")
-                                    # note which motifs get absorbed
-                                    if d.iloc[j].motif not in absorbed:
-                                        absorbed[d.iloc[j].motif] = []
-                                    absorbed[d.iloc[j].motif].append((d.iloc[i].motif, d.iloc[i].stddevs))
                                     d = d.drop(d.index[i])
                                     changed = True
                                     break
@@ -921,7 +991,7 @@ def reduce_motifs(d, sa, max_motif_len, mu, sigma, fwd_expsumlogp, rev_expsumlog
                 if best[4] < thr:
                     keep_combined, drop_mi, drop_mj = True, True, True
                     if len(best[0]) <= len(d.iloc[i].motif):
-                        idx, ident = motif_contains(d.iloc[i].motif, best[0])
+                        idx, ident, _ = motif_contains(d.iloc[i].motif, best[0])
                         if idx is not None:
                             m_diff = motif_diff(d.iloc[i].motif, best[0], idx)
                             means, Ns = suffix_array.motif_means([m_diff], len(m_diff), fwd_expsumlogp, rev_expsumlogp, sa)
@@ -938,7 +1008,7 @@ def reduce_motifs(d, sa, max_motif_len, mu, sigma, fwd_expsumlogp, rev_expsumlog
                                 keep_combined = False
                                 drop_mi = False
                     if len(best[0]) <= len(d.iloc[j].motif):
-                        idx, ident = motif_contains(d.iloc[j].motif, best[0])
+                        idx, ident, _ = motif_contains(d.iloc[j].motif, best[0])
                         if idx is not None:
                             m_diff = motif_diff(d.iloc[j].motif, best[0], idx)
                             means, Ns = suffix_array.motif_means([m_diff], len(m_diff), fwd_expsumlogp, rev_expsumlogp, sa)
@@ -957,13 +1027,6 @@ def reduce_motifs(d, sa, max_motif_len, mu, sigma, fwd_expsumlogp, rev_expsumlog
                     if keep_combined:
                         new_motif = pd.Series(best, index=d.columns)
                         logging.getLogger('comos').debug(f"combined {d.iloc[i].motif}:{d.iloc[i].poi} ({d.iloc[i].N}, {d.iloc[i].stddevs:.2f}) and {d.iloc[j].motif}:{d.iloc[j].poi} ({d.iloc[j].N}, {d.iloc[j].stddevs:.2f}) to {best[0]}:{best[1]} ({best[3]}, {best[4]:.2f})")
-                        # note which motifs get absorbed
-                        #if d.iloc[i].motif in absorbed:
-                        #    absorbed[new_motif.motif].extend(absorbed[d.iloc[i].motif])
-                        #if d.iloc[j].motif in absorbed:
-                        #    absorbed[new_motif.motif].extend(absorbed[d.iloc[j].motif])
-                        absorbed[new_motif.motif] = [(d.iloc[i].motif, d.iloc[i].stddevs), 
-                                                    (d.iloc[j].motif, d.iloc[j].stddevs)]
                         # drop / replace entries
                         d.iloc[i] = new_motif
                         d = d.drop(d.index[j])
@@ -971,19 +1034,11 @@ def reduce_motifs(d, sa, max_motif_len, mu, sigma, fwd_expsumlogp, rev_expsumlog
                         break
                     elif drop_mi and not drop_mj:
                         logging.getLogger('comos').debug(f"dropped {d.iloc[i].motif}:{d.iloc[i].poi} ({d.iloc[i].N}, {d.iloc[i].stddevs:.2f}) for {d.iloc[j].motif}:{d.iloc[j].poi} ({d.iloc[j].N}, {d.iloc[j].stddevs:.2f}) considering {best[0]}:{best[1]} ({best[3]}, {best[4]:.2f})")
-                        # note which motifs get absorbed
-                        if d.iloc[j].motif not in absorbed:
-                            absorbed[d.iloc[j].motif] = []
-                        absorbed[d.iloc[j].motif].append((d.iloc[i].motif, d.iloc[i].stddevs))
                         d = d.drop(d.index[i])
                         changed = True
                         break
                     elif drop_mj and not drop_mi:
                         logging.getLogger('comos').debug(f"dropped {d.iloc[j].motif}:{d.iloc[j].poi} ({d.iloc[j].N}, {d.iloc[j].stddevs:.2f}) for {d.iloc[i].motif}:{d.iloc[i].poi} ({d.iloc[i].N}, {d.iloc[i].stddevs:.2f}) considering {best[0]}:{best[1]} ({best[3]}, {best[4]:.2f})")
-                        # note which motifs get absorbed
-                        if d.iloc[i].motif not in absorbed:
-                            absorbed[d.iloc[i].motif] = []
-                        absorbed[d.iloc[i].motif].append((d.iloc[j].motif, d.iloc[j].stddevs))
                         d = d.drop(d.index[j])
                         changed = True
                         break
@@ -1028,7 +1083,7 @@ def reduce_motifs(d, sa, max_motif_len, mu, sigma, fwd_expsumlogp, rev_expsumlog
                         break
             if changed:
                 break
-    return d.sort_values('stddevs').reset_index(drop=True), absorbed
+    return d.sort_values('stddevs').reset_index(drop=True)
 
 def is_palindromic(motif):
     return reverse_complement(motif) == motif
@@ -1044,10 +1099,20 @@ def main(args):
             f"only {contig_id} of length {len(seq)} is analyzed")
     else:
         logging.getLogger('comos').info(f"Analyzing contig {contig_id} of length {len(seq):,} bp")
-    tstart = time.time()
-    df = parse_diff_file(args.rds, contig_id)
-    tstop = time.time()
-    logging.getLogger('comos').info(f"Parsed RDS file in {tstop - tstart:.2f} seconds")
+    
+    cache_fp = os.path.join(args.cache, f"{os.path.abspath(args.rds).replace('/','_')}.pkl")
+    if os.path.exists(cache_fp) and args.cache:
+        tstart = time.time()
+        df = pd.read_pickle(cache_fp)
+        logging.getLogger('comos').info(f"Parsed cached RDS data in {tstop - tstart:.2f} seconds")
+        tstop = time.time()
+    else:
+        tstart = time.time()
+        df = parse_diff_file(args.rds, contig_id)
+        tstop = time.time()
+        logging.getLogger('comos').info(f"Parsed RDS file in {tstop - tstart:.2f} seconds")
+        if args.cache:
+            df.to_pickle(cache_fp)
     
     fwd_expsumlogp, rev_expsumlogp = compute_expsumlogp(df, seq)
     
@@ -1165,7 +1230,7 @@ def main(args):
     logging.getLogger('comos').info(f"Selected {sel.sum():,} motifs based on selection threshold of {args.selection_thr} std. deviations.")
     #print(results.loc[sel])
     tstart = time.time()
-    motifs_found, absorbed = reduce_motifs(
+    motifs_found = reduce_motifs(
         results.loc[sel], 
         sa, args.max_k + args.max_g, 
         mu, sigma, 
