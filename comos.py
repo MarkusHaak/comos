@@ -302,7 +302,7 @@ def get_seq_index_combinations(k_min, k_max, min_gap, max_gap, bases, blur):
                         seq_index_combinations[seq_] = indexes_
     return seq_index_combinations
 
-def plot_diffs_with_complementary(motif, sa, fwd_diff, rev_diff, ymax=np.inf, offset=3, savepath=None):
+def plot_diffs_with_complementary(motif, sa, fwd_diff, rev_diff, ymax=np.inf, offset=3, savepath=None, fwd=None, rev=None):
     mlen = len(motif)
     positions = list(range(-offset, mlen+offset))
     ind_fwd, ind_rev = suffix_array.find_motif(motif, sa)
@@ -314,6 +314,8 @@ def plot_diffs_with_complementary(motif, sa, fwd_diff, rev_diff, ymax=np.inf, of
         rev_diffs = rev_diff[ind_rev - i]
         diffs = np.abs(np.concatenate([fwd_diffs[~np.isnan(fwd_diffs)], rev_diffs[~np.isnan(rev_diffs)]]))
         data_fwd.append(diffs)
+    if fwd is not None:
+        means_fwd, Ns_fwd = suffix_array.motif_means([motif], len(motif), fwd, rev, sa)
     # complementary strand
     n_fwd_c, n_rev_c = len(ind_fwd), len(ind_rev)
     data_rev = []
@@ -322,6 +324,8 @@ def plot_diffs_with_complementary(motif, sa, fwd_diff, rev_diff, ymax=np.inf, of
         rev_diffs = fwd_diff[ind_rev - i]
         diffs = np.abs(np.concatenate([fwd_diffs[~np.isnan(fwd_diffs)], rev_diffs[~np.isnan(rev_diffs)]]))
         data_rev.append(diffs)
+    if rev is not None:
+        means_rev, Ns_rev = suffix_array.motif_means([reverse_complement(motif)], len(motif), fwd, rev, sa)
     
     fig,(ax1,ax2) = plt.subplots(2,1)
     fig.subplots_adjust(hspace=0.3)
@@ -343,6 +347,16 @@ def plot_diffs_with_complementary(motif, sa, fwd_diff, rev_diff, ymax=np.inf, of
     ax2.invert_yaxis()
     ax1.spines[['right', 'top']].set_visible(False)
     ax2.spines[['right', 'bottom']].set_visible(False)
+
+    if fwd is not None:
+        ax1_twin = ax1.twinx()
+        ax1_twin.set_ylim(0,0.01)
+        ax1_twin.scatter(np.array(range(len(motif))) + offset + 1, means_fwd[0], color='C0')
+    if rev is not None:
+        ax2_twin = ax2.twinx()
+        ax2_twin.set_ylim(0,0.01)
+        ax2_twin.scatter(np.array(range(len(motif))) + offset + 1, np.flip(means_rev[0]), color='C0')
+
     if savepath:
         plt.savefig(savepath, dpi=300)
     else:
@@ -724,7 +738,7 @@ def reduce_motifs(d, sa, max_motif_len, mu, sigma, fwd_expsumlogp, rev_expsumlog
                         poi = np.nanargmin(means[0])
                         N = min(Ns[0][poi], len(mu)-1)
                         stddev = (best - mu[N]) / sigma[N]
-                        if stddev >= thr:
+                        if stddev >= ambiguity_thr:
                             # drop root motif, keep longer ones
                             for u,v in by_index[idx]['edges']:
                                 G.remove_edge(u,v)
@@ -1181,7 +1195,7 @@ def main(args):
         if args.plot:
             fwd_diff, rev_diff = compute_diffs(df, seq)
             for m,row in res.iterrows():
-                plot_diffs_with_complementary(m, sa, fwd_diff, rev_diff, savepath=os.path.join(args.out, f"{m}_{row.poi}.png"), ymax=8.)
+                plot_diffs_with_complementary(m, sa, fwd_diff, rev_diff, savepath=os.path.join(args.out, f"{m}_{row.poi}.png"), ymax=8., fwd=fwd_expsumlogp, rev=rev_expsumlogp)
         res = res.reset_index().rename(columns={'index':'motif'})
         print(res)
         exit()
@@ -1216,7 +1230,7 @@ def main(args):
                     thr=sel_thr, #thr=row.stddevs, 
                     ambiguity_thr=-args.ambiguity_thr,
                     ambiguity_quantile=args.ambiguity_quantile, 
-                    ambiguity_cov=-args.ambiguity_cov,
+                    ambiguity_cov=args.ambiguity_cov,
                     absorbed=absorbed)
                 motifs['n_canonical'] = motifs['motif'].apply(get_num_absorbed, absorbed=absorbed)
                 thresholds.append(row.stddevs)
@@ -1238,7 +1252,7 @@ def main(args):
         thr=-args.selection_thr, 
         ambiguity_thr=-args.ambiguity_thr,
         ambiguity_quantile=args.ambiguity_quantile, 
-        ambiguity_cov=-args.ambiguity_cov,)
+        ambiguity_cov=args.ambiguity_cov,)
     tstop = time.time()
     logging.getLogger('comos').info(f"Performed motif reduction in {tstop - tstart:.2f} seconds")
     #motifs_found['n_canonical'] = motifs_found['motif'].apply(get_num_absorbed, absorbed=absorbed) # TODO: fix recursion problem
