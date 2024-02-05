@@ -302,9 +302,32 @@ def get_seq_index_combinations(k_min, k_max, min_gap, max_gap, bases, blur):
                         seq_index_combinations[seq_] = indexes_
     return seq_index_combinations
 
-def plot_diffs_with_complementary(motif, sa, fwd_diff, rev_diff, ymax=np.inf, offset=3, savepath=None, fwd=None, rev=None):
+def plot_context_dependent_differences(motif, poi, sa, fwd_diff, rev_diff, ymax=np.inf, pad=2, absolute=False, savepath=None):
+    poi = int(poi)
     mlen = len(motif)
-    positions = list(range(-offset, mlen+offset))
+
+    #mean_fwd_diff = pd.Series(np.abs(fwd_diff) - np.nanmedian(np.abs(fwd_diff))).rolling(5, center=True, min_periods=3).sum()
+    #mean_rev_diff = pd.Series(np.abs(rev_diff) - np.nanmedian(np.abs(rev_diff))).rolling(5, center=True, min_periods=3).sum()
+    #median_mean, Ns_median_mean = suffix_array.motif_medians([motif], len(motif), mean_fwd_diff, mean_rev_diff, sa)
+    #medians_rev, Ns_med_rev = suffix_array.motif_medians([reverse_complement(motif)], len(motif), mean_fwd_diff, mean_rev_diff, sa)
+
+    motif_padded = "N"*max(0, pad - poi) + motif + "N"*max(0,pad-(mlen-poi-1))
+    poi_ = poi + max(0, pad - poi)
+    positions = list(range(poi_-pad, poi_+pad+1))
+    xtick_labels = motif_padded[positions[0]:positions[-1]+1]
+    bases = []
+    for i in range(len(motif_padded)):
+        if i in positions:
+            bases.append(IUPAC_TO_LIST[motif_padded[i]])
+        else:
+            bases.append(list(motif_padded[i]))
+    expanded_motifs = ["".join(p) for p in itertools.product(*bases)]
+
+    medians_fwd, Ns_med_fwd = suffix_array.all_motif_medians(expanded_motifs, len(expanded_motifs[0]), fwd_diff, rev_diff, sa, pad=0)
+    medians_fwd = medians_fwd[:, positions]
+    Ns_med_fwd = Ns_med_fwd[:, positions]
+
+    positions = list(range(poi-pad, poi+pad+1))
     ind_fwd, ind_rev = suffix_array.find_motif(motif, sa)
     # original strand
     n_fwd, n_rev = len(ind_fwd), len(ind_rev)
@@ -312,7 +335,63 @@ def plot_diffs_with_complementary(motif, sa, fwd_diff, rev_diff, ymax=np.inf, of
     for i in positions:
         fwd_diffs = fwd_diff[ind_fwd + i]
         rev_diffs = rev_diff[ind_rev - i]
-        diffs = np.abs(np.concatenate([fwd_diffs[~np.isnan(fwd_diffs)], rev_diffs[~np.isnan(rev_diffs)]]))
+        diffs = np.concatenate([fwd_diffs[~np.isnan(fwd_diffs)], rev_diffs[~np.isnan(rev_diffs)]])
+        data_fwd.append(diffs)
+    
+    fig,ax = plt.subplots()
+    ax.grid(axis="y", zorder=-100)
+    boxprops = dict(linewidth=2.0, color='black')
+    whiskerprops = dict(linewidth=2.0, color='black')
+    medianprops = dict(linewidth=2.0, color='black', linestyle=":")
+    if absolute is False:
+        ax.boxplot(data_fwd, boxprops=boxprops, whiskerprops=whiskerprops, medianprops=medianprops)
+    #elif absolute == "both":
+    #    ax.boxplot(data_fwd)
+    #    ax.boxplot([np.abs(d) for d in data_fwd])
+    else:
+        ax.boxplot([np.abs(d) for d in data_fwd], boxprops=boxprops, whiskerprops=whiskerprops, medianprops=medianprops)
+    
+    for i in range(len(expanded_motifs)):
+        if absolute is False:
+            ax.plot(range(1, len(positions)+1), medians_fwd[i], zorder=-50, alpha=0.5)
+        else:
+            ax.plot(range(1, len(positions)+1), np.abs(medians_fwd[i]), zorder=-50, alpha=0.5)
+    
+    if absolute:
+        max_ylim = (0, 
+                    min(ax.get_ylim()[1], ymax))
+    else:
+        max_ylim = (max(min(ax.get_ylim()[0], -ax.get_ylim()[1]), -ymax), 
+                    min(max(ax.get_ylim()[1], -ax.get_ylim()[0]), ymax))
+    ax.set_ylim(max_ylim)
+    ax.set_xticklabels(xtick_labels)
+    ax.set_title(f"{motif}:{poi}")
+
+    if savepath:
+        plt.savefig(savepath, dpi=300)
+    else:
+        plt.show()
+
+def plot_diffs_with_complementary(motif, sa, fwd_diff, rev_diff, ymax=np.inf, offset=3, savepath=None, fwd=None, rev=None, absolute=True):
+    mlen = len(motif)
+    positions = list(range(-offset, mlen+offset))
+    ind_fwd, ind_rev = suffix_array.find_motif(motif, sa)
+
+    #mean_fwd_diff = pd.Series(np.abs(fwd_diff) - np.nanmedian(np.abs(fwd_diff))).rolling(5, center=True, min_periods=3).sum()
+    #mean_rev_diff = pd.Series(np.abs(rev_diff) - np.nanmedian(np.abs(rev_diff))).rolling(5, center=True, min_periods=3).sum()
+    #medians_fwd, Ns_med_fwd = suffix_array.motif_medians([motif], len(motif), mean_fwd_diff, mean_rev_diff, sa)
+    #medians_rev, Ns_med_rev = suffix_array.motif_medians([reverse_complement(motif)], len(motif), mean_fwd_diff, mean_rev_diff, sa)
+
+    # original strand
+    n_fwd, n_rev = len(ind_fwd), len(ind_rev)
+    data_fwd = []
+    for i in positions:
+        fwd_diffs = fwd_diff[ind_fwd + i]
+        rev_diffs = rev_diff[ind_rev - i]
+        if absolute:
+            diffs = np.abs(np.concatenate([fwd_diffs[~np.isnan(fwd_diffs)], rev_diffs[~np.isnan(rev_diffs)]]))
+        else:
+            diffs = np.concatenate([fwd_diffs[~np.isnan(fwd_diffs)], rev_diffs[~np.isnan(rev_diffs)]])
         data_fwd.append(diffs)
     if fwd is not None:
         means_fwd, Ns_fwd = suffix_array.motif_means([motif], len(motif), fwd, rev, sa)
@@ -322,7 +401,10 @@ def plot_diffs_with_complementary(motif, sa, fwd_diff, rev_diff, ymax=np.inf, of
     for i in positions:
         fwd_diffs = rev_diff[ind_fwd + i]
         rev_diffs = fwd_diff[ind_rev - i]
-        diffs = np.abs(np.concatenate([fwd_diffs[~np.isnan(fwd_diffs)], rev_diffs[~np.isnan(rev_diffs)]]))
+        if absolute:
+            diffs = np.abs(np.concatenate([fwd_diffs[~np.isnan(fwd_diffs)], rev_diffs[~np.isnan(rev_diffs)]]))
+        else:
+            diffs = np.concatenate([fwd_diffs[~np.isnan(fwd_diffs)], rev_diffs[~np.isnan(rev_diffs)]])
         data_rev.append(diffs)
     if rev is not None:
         means_rev, Ns_rev = suffix_array.motif_means([reverse_complement(motif)], len(motif), fwd, rev, sa)
@@ -339,7 +421,12 @@ def plot_diffs_with_complementary(motif, sa, fwd_diff, rev_diff, ymax=np.inf, of
     ax2.xaxis.tick_top()
     ax1.set(ylabel=r"(+) strand abs. diff / $pA$")
     ax2.set(ylabel=r"(-) strand abs. diff / $pA$")
-    max_ylim = (0, min(max(ax1.get_ylim()[1], ax2.get_ylim()[1]), ymax))
+    if absolute:
+        max_ylim = (0, 
+                    min(max(ax1.get_ylim()[1], ax2.get_ylim()[1]), ymax))
+    else:
+        max_ylim = (max(min(ax1.get_ylim()[0], ax2.get_ylim()[0]), -ymax), 
+                    min(max(ax1.get_ylim()[1], ax2.get_ylim()[1]), ymax))
     ax1.set_ylim(max_ylim)
     ax2.set_ylim(max_ylim)
     ax1.grid(axis='y', zorder=-4)
@@ -356,6 +443,10 @@ def plot_diffs_with_complementary(motif, sa, fwd_diff, rev_diff, ymax=np.inf, of
         ax2_twin = ax2.twinx()
         ax2_twin.set_ylim(0,0.01)
         ax2_twin.scatter(np.array(range(len(motif))) + offset + 1, np.flip(means_rev[0]), color='C0')
+        ax2_twin.invert_yaxis()
+    
+    #ax1.scatter(np.array(range(len(motif))) + offset + 1, medians_fwd[0], color='C2')
+    #ax2.scatter(np.array(range(len(motif))) + offset + 1, np.flip(medians_rev[0]), color='C2')
 
     if savepath:
         plt.savefig(savepath, dpi=300)
@@ -425,7 +516,8 @@ def plot_motif_scores(results, mu, sigma, thr=6., savepath=None):
     #ax.plot(X, mu[X.astype(int)] + thr*sigma[X.astype(int)], color='C0', linestyle=':')
     ax.plot(X, mu[X.astype(int)] - thr*sigma[X.astype(int)], color='C0', linestyle=':')
     ax.grid()
-    ax.set(ylim=(-0.0005, ax.get_ylim()[1]), xlim=(-50,5000),
+    ax.set(ylim=(-0.0005, ax.get_ylim()[1]),
+           xlim=(-50,5000),
         xlabel="# motif sites", ylabel="10**(sumlog p)")
     if savepath:
         plt.savefig(savepath, dpi=300)
@@ -685,7 +777,9 @@ def reduce_motifs(d, sa, max_motif_len, mu, sigma, fwd_expsumlogp, rev_expsumlog
             if idx is not None:
                 G.add_edge(i, j, weight=len(diff), diff=diff, idx=idx)
 
-    
+    # TODO: fist reduce contiguous trees, then prune bipartite trees with contiguous motifs, then reduce bipartite trees
+    # --> remove bipartite motifs that contain short contiguous motifs on one side
+     
     n_sGs = len([G.subgraph(c) for c in nx.connected_components(G.to_undirected())])
     G.remove_edges_from([(f, t) for f,t,d in G.edges.data() if d['weight'] > 1])
     sGs = [nx.DiGraph(G.subgraph(c)) for c in nx.connected_components(G.to_undirected())]
@@ -1130,6 +1224,10 @@ def main(args):
     
     fwd_expsumlogp, rev_expsumlogp = compute_expsumlogp(df, seq)
     
+    #fwd_diff, rev_diff = compute_diffs(df, seq)
+    #mean_fwd_diff = pd.Series(np.abs(fwd_diff)).rolling(5, center=True, min_periods=4).sum()
+    #mean_rev_diff = pd.Series(np.abs(rev_diff)).rolling(5, center=True, min_periods=4).sum()
+
     canon_motifs = get_seq_index_combinations(args.min_k, args.max_k, args.min_g, args.max_g, ['A', 'C'], 0)
     all_canon_motifs = list(canon_motifs.keys())
     logging.getLogger('comos').info(f"Analyzing {len(canon_motifs):,} canonical motifs and "\
@@ -1145,6 +1243,8 @@ def main(args):
     else:
         tstart = time.time()
         means, means_counts = suffix_array.motif_means(all_canon_motifs, args.max_k + args.max_g, fwd_expsumlogp, rev_expsumlogp, sa)
+        #means, means_counts = suffix_array.motif_medians(all_canon_motifs, args.max_k + args.max_g, fwd_expsumlogp, rev_expsumlogp, sa)
+        #means, means_counts = suffix_array.motif_medians(all_canon_motifs, args.max_k + args.max_g, mean_fwd_diff, mean_rev_diff, sa)
         tstop = time.time()
         logging.getLogger('comos').info(f"Computed canonical motif scores in {tstop - tstart:.2f} seconds")
         if args.cache:
@@ -1195,7 +1295,8 @@ def main(args):
         if args.plot:
             fwd_diff, rev_diff = compute_diffs(df, seq)
             for m,row in res.iterrows():
-                plot_diffs_with_complementary(m, sa, fwd_diff, rev_diff, savepath=os.path.join(args.out, f"{m}_{row.poi}.png"), ymax=8., fwd=fwd_expsumlogp, rev=rev_expsumlogp)
+                plot_context_dependent_differences(m, row.poi, sa, fwd_diff, rev_diff, savepath=os.path.join(args.out, f"{m}_{int(row.poi)}_median.png"))
+                plot_diffs_with_complementary(m, sa, fwd_diff, rev_diff, savepath=os.path.join(args.out, f"{m}_{int(row.poi)}.png"), ymax=10., absolute=False, fwd=fwd_expsumlogp, rev=rev_expsumlogp)
         res = res.reset_index().rename(columns={'index':'motif'})
         print(res)
         exit()
