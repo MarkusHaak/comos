@@ -196,7 +196,7 @@ def parse_args():
     hyper_grp.add_argument(
         '--ambiguity-thr',
         type=float,
-        default=2.0,
+        default=3.0,
         help='Minimum diversion from Null-model in number of std.dev. required for an extended motif.' 
     )
     hyper_grp.add_argument(
@@ -870,6 +870,7 @@ def resolve_motif_graph(sG, d, sa, max_motif_len, mu, sigma, fwd_metric, rev_met
                 by_index[diff[0]]['data'].append((d.loc[edge[1], 'motif'], idx))
             
             # for each position indipendently, determine if the shorter motif or all longer motifs shall be pruned
+            # TODO: better check all positions at once?
             drop_root_node = False
             for idx in by_index:
                 m_diff = motif_diff_multi(root_motif, by_index[idx]['data'])
@@ -892,17 +893,17 @@ def resolve_motif_graph(sG, d, sa, max_motif_len, mu, sigma, fwd_metric, rev_met
                     poi = np.nanargmin(aggregates[0])
                     N = min(Ns[0][poi], len(mu)-1)
                     stddev = (best - mu[N]) / sigma[N]
-                    if (opt_dir == "min" and stddev >= ambiguity_thr) or (opt_dir == "max" and stddev <= ambiguity_thr):
+                    if (opt_dir == "min" and stddev >= thr) or (opt_dir == "max" and stddev <= thr):
                         # drop root motif, keep longer ones
                         for u,v in by_index[idx]['edges']:
                             sG.remove_edge(u,v)
-                        logging.getLogger('comos').info(f"{m_diff} : {stddev} --> drop root node {d.loc[root_node, 'motif']} for {[d.loc[v, 'motif'] for u,v in by_index[idx]['edges']]}")
+                        logging.getLogger('comos').info(f"{m_diff} : {stddev:.2f} --> drop root node {d.loc[root_node, 'motif']} for {[d.loc[v, 'motif'] for u,v in by_index[idx]['edges']]}")
                         drop_root_node = True
                     else:
                         # prune all longer motifs
                         pruned = prune_edges(sG, by_index[idx]['edges'], d)
                         d = d.drop(pruned)
-                        logging.getLogger('comos').info(f"{m_diff} : {stddev} --> kept root node {d.loc[root_node, 'motif']}, pruned {len(pruned)} nodes")
+                        logging.getLogger('comos').info(f"{m_diff} : {stddev:.2f} --> kept root node {d.loc[root_node, 'motif']}, pruned {len(pruned)} nodes")
             if drop_root_node:
                 sG.remove_node(root_node)
                 d = d.drop(root_node)
