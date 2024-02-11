@@ -858,15 +858,16 @@ def resolve_motif_graph(sG, d, sa, max_motif_len, mu, sigma, fwd_metric, rev_met
             # sort outgoing edges by the position that is over-specifying the shorter motif
             by_index = {}
             for edge in sG.out_edges(root_node):
+                idx, ident, diff = motif_contains(d.loc[edge[1]].motif, root_motif)
                 edge_data = sG.get_edge_data(*edge)
-                if len(edge_data['diff']) != 1:
+                if len(diff) != 1:
                     # at the moment, this should not be possible because each edge has edit distance 1
                     logging.getLogger('comos').error(f"unhandled exception: motifs for {root_motif} and {d.loc[edge[1], 'motif']} differ in more than one position")
                     exit(1)
-                if edge_data['diff'][0] not in by_index:
-                    by_index[edge_data['diff'][0]] = {"edges":[], "data":[]}
-                by_index[edge_data['diff'][0]]['edges'].append(edge)
-                by_index[edge_data['diff'][0]]['data'].append((d.loc[edge[1], 'motif'], edge_data['idx']))
+                if diff[0] not in by_index:
+                    by_index[diff[0]] = {"edges":[], "data":[]}
+                by_index[diff[0]]['edges'].append(edge)
+                by_index[diff[0]]['data'].append((d.loc[edge[1], 'motif'], idx))
             
             # for each position indipendently, determine if the shorter motif or all longer motifs shall be pruned
             drop_root_node = False
@@ -944,24 +945,30 @@ def reduce_motifs(d, sa, max_motif_len, mu, sigma, fwd_metric, rev_metric, aggr_
     G = nx.DiGraph()
     for i in range(0,len(d)):
         G.add_node(i)
-        for j in range(i+1,len(d)):
-            # due to sorting, motif i is ensured to be smaller or equally long than motif j
-            if d.iloc[i].typeI != d.iloc[j].typeI:
-                continue
-            elif d.iloc[i].slen > d.iloc[j].slen:
-                # ensure that number of specific bases is smaller for motif i than for motif j (only relevant for TypeI)
-                continue
-            # check if motif i is contained in motif j
-            idx, ident, diff = motif_contains(d.iloc[j].motif, d.iloc[i].motif)
-            if idx is not None:
-                G.add_edge(i, j, weight=len(diff), diff=diff, idx=idx)
-     
+        #for j in range(i+1,len(d)):
+        #    # due to sorting, motif i is ensured to be smaller or equally long than motif j
+        #    if d.iloc[i].typeI != d.iloc[j].typeI:
+        #        continue
+        #    elif d.iloc[i].slen > d.iloc[j].slen:
+        #        # ensure that number of specific bases is smaller for motif i than for motif j (only relevant for TypeI)
+        #        continue
+        #    # check if motif i is contained in motif j
+        #    idx, ident, diff = motif_contains(d.iloc[j].motif, d.iloc[i].motif)
+        #    if idx is not None:
+        #        G.add_edge(i, j, weight=len(diff), diff=diff, idx=idx)
+        sel = (d.index > i) & (d.typeI == d.loc[i, 'typeI']) & (0 <= d.slen - d.loc[i, 'slen']) # TODO: check if longer edges needed, if not: & (d.slen - d.loc[i, 'slen'] <= 1)
+        contain_i = d.loc[sel].loc[d.loc[sel].motif.str.contains(d.loc[i].motif.replace('N','.'))]
+        if not contain_i.empty:
+            #G.add_edge_from(itertools.product([i], contain_i.index), weight=1)
+            for j, row in contain_i.iterrows():
+                #G.add_edge(i, j, weight=1, diff=diff, idx=idx)
+                G.add_edge(i, j, weight=row.slen - d.loc[i, 'slen'])
     n_sGs = len([G.subgraph(c) for c in nx.connected_components(G.to_undirected()) if np.any(d.loc[list(c), 'pass'])])
     G.remove_edges_from([(f, t) for f,t,d in G.edges.data() if d['weight'] > 1])
     sGs = [G.subgraph(c).copy() for c in nx.connected_components(G.to_undirected()) if np.any(d.loc[list(c), 'pass'])]
     if len(sGs) != n_sGs:
         # TODO : handle this, e.g. by keeping "longest" paths between any two nodes?
-        logging.getLogger('comos').warning(f"Unhandled case: Number of subgraphs decreased from {n_sGs} to {len(sGs)} by removing edges with >1 edit distance between motifs.")
+        logging.getLogger('comos').warning(f"Unhandled case: Number of subgraphs changed from {n_sGs} to {len(sGs)} by removing edges with >1 edit distance between motifs.")
     logging.getLogger('comos').info(f"{len(sGs)} subgraphs in nested motif network")
     sGs = [sG for sG in sGs if np.any(d.loc[list(sG), 'pass'])]
     logging.getLogger('comos').info(f"{len(sGs)} subgraphs with any valid motif")
@@ -1034,7 +1041,7 @@ def reduce_motifs(d, sa, max_motif_len, mu, sigma, fwd_metric, rev_metric, aggr_
                         pruned = prune_edges(sG, list(sG.out_edges(j)), d)
                         sG.remove_node(j)
                         d = d.drop(pruned)
-                        logging.getLogger('comos').info(f"Motif {d.loc[i, 'motif']} found in TypeI motif {d.loc[j, 'motif']}, pruned {len(pruned)+1} nodes")
+                        logging.getLogger('comos').debug(f"Motif {d.loc[i, 'motif']} found in TypeI motif {d.loc[j, 'motif']}, pruned {len(pruned)+1} nodes")
                         changed = True
                         break
         # reduce the remaining graph
