@@ -378,8 +378,8 @@ def plot_context_dependent_differences(motif, poi, sa, fwd_diff, rev_diff, ymax=
     n_fwd, n_rev = len(ind_fwd), len(ind_rev)
     data_fwd = []
     for i in positions:
-        fwd_diffs = fwd_diff[ind_fwd + i]
-        rev_diffs = rev_diff[ind_rev - i]
+        fwd_diffs = fwd_diff[(ind_fwd + i)[(ind_fwd + i >= 0) & (ind_fwd + i < len(fwd_diff))]]
+        rev_diffs = rev_diff[(ind_rev - i)[(ind_rev - i >= 0) & (ind_rev - i < len(rev_diff))]]
         diffs = np.concatenate([fwd_diffs[~np.isnan(fwd_diffs)], rev_diffs[~np.isnan(rev_diffs)]])
         data_fwd.append(diffs)
     
@@ -439,8 +439,8 @@ def plot_diffs_with_complementary(motif, sa, fwd_diff, rev_diff, ymax=np.inf, of
         n_fwd, n_rev = len(ind_fwd), len(ind_rev)
         data_fwd = []
         for i in positions:
-            fwd_diffs = fwd_diff[ind_fwd + i]
-            rev_diffs = rev_diff[ind_rev - i]
+            fwd_diffs = fwd_diff[(ind_fwd + i)[(ind_fwd + i >= 0) & (ind_fwd + i < len(fwd_diff))]]
+            rev_diffs = rev_diff[(ind_rev - i)[(ind_rev - i >= 0) & (ind_rev - i < len(rev_diff))]]
             if absolute:
                 diffs = np.abs(np.concatenate([fwd_diffs[~np.isnan(fwd_diffs)], rev_diffs[~np.isnan(rev_diffs)]]))
             else:
@@ -450,8 +450,8 @@ def plot_diffs_with_complementary(motif, sa, fwd_diff, rev_diff, ymax=np.inf, of
         n_fwd_c, n_rev_c = len(ind_fwd), len(ind_rev)
         data_rev = []
         for i in positions:
-            fwd_diffs = rev_diff[ind_fwd + i]
-            rev_diffs = fwd_diff[ind_rev - i]
+            fwd_diffs = rev_diff[(ind_fwd + i)[(ind_fwd + i >= 0) & (ind_fwd + i < len(fwd_diff))]]
+            rev_diffs = fwd_diff[(ind_rev - i)[(ind_rev - i >= 0) & (ind_rev - i < len(rev_diff))]]
             if absolute:
                 diffs = np.abs(np.concatenate([fwd_diffs[~np.isnan(fwd_diffs)], rev_diffs[~np.isnan(rev_diffs)]]))
             else:
@@ -469,7 +469,7 @@ def plot_diffs_with_complementary(motif, sa, fwd_diff, rev_diff, ymax=np.inf, of
             patch_artist=True, 
             boxprops=dict(facecolor=f"C{c}"), 
             medianprops=dict(color="black",linewidth=1.5))
-        labels.append(f"{m}, n={n_fwd+n_rev:>4,}")
+        labels.append(f"{m}, n={n_fwd+n_rev:>4}")
 
     ax1.legend([boxes[i]["boxes"][0] for i in range(len(boxes))], labels, loc='upper right', prop={'family': 'monospace', 'size':10})
     ax1.set_xticks(positions)
@@ -923,6 +923,89 @@ def resolve_motif_graph(sG, d, sa, max_motif_len, mu, sigma, fwd_metric, rev_met
         breakpoint()
     return d
 
+def test_combine_motifs(d, i, j, sa, max_motif_len, mu, sigma, fwd_metric, rev_metric, aggr_fct, opt_dir, thr, ambiguity_thr, ambiguity_min_sites, ambiguity_min_tests):
+    combined_motifs = combine_motifs(d.loc[i].motif, d.loc[j].motif)
+    aggregates, Ns = aggr_fct(combined_motifs, max_motif_len, fwd_metric, rev_metric, sa)
+    #calculate number of std. deviations
+    if opt_dir == "min":
+        best = [None, None, np.inf, 0, np.inf, np.inf, d.loc[i].typeI]
+    else:
+        best = [None, None, -np.inf, 0, -np.inf, np.inf, d.loc[i].typeI]
+    for (m,motif) in enumerate(combined_motifs):
+        for poi in get_pois(motif):
+            N = min(Ns[m][poi], len(mu)-1)
+            stddevs = (aggregates[m][poi] - mu[N]) / sigma[N]
+            if (opt_dir == "min" and stddevs < best[4]) or (opt_dir == "max" and stddevs > best[4]):
+                if (opt_dir == "min" and stddevs < thr) or (opt_dir == "max" and stddevs > thr):
+                    if ambiguity_thr is not None:
+                        if not test_ambiguous(motif, sa, max_motif_len, mu, sigma, fwd_metric, rev_metric, aggr_fct, opt_dir, ambiguity_thr, min_N=ambiguity_min_sites ,min_tests=ambiguity_min_tests):
+                            if d.loc[i].typeI:
+                                if test_ambiguous(reverse_complement(motif), sa, max_motif_len, mu, sigma, fwd_metric, rev_metric, aggr_fct, opt_dir, ambiguity_thr, min_N=ambiguity_min_sites, min_tests=ambiguity_min_tests):
+                                    logging.getLogger('comos').info(f'ambiguous test failed for combined motif {motif} but not for its RC --> kept.')
+                                else:
+                                    continue
+                            else:
+                                continue
+                    # test if all exploded, canonical motifs of the combined motif are above the selection threshold
+                    if not test_exploded(motif, poi, sa, max_motif_len, mu, sigma, fwd_metric, rev_metric, aggr_fct, opt_dir, thr):
+                        logging.getLogger('comos').debug(f'exploded motif test failed for combined motif {motif}')
+                        continue
+                    if opt_dir == "min":
+                        best = [motif, poi, aggregates[m][poi], Ns[m][poi], stddevs, norm().cdf(stddevs), d.loc[i].typeI]
+                    else:
+                        best = [motif, poi, aggregates[m][poi], Ns[m][poi], stddevs, 1. - norm().cdf(stddevs), d.loc[i].typeI]
+    #logging.getLogger('comos').debug("comparison:", best[4], max(d.loc[i].stddevs, d.loc[j].stddevs))
+    keep_combined, drop_mi, drop_mj = False, False, False
+    if (opt_dir == "min" and best[4] < thr) or (opt_dir == "max" and best[4] > thr):
+        keep_combined, drop_mi, drop_mj = True, True, True
+        if len(best[0]) <= len(d.loc[i].motif):
+            idx, ident, _ = motif_contains(d.loc[i].motif, best[0])
+            if idx is not None:
+                m_diff = motif_diff(d.loc[i].motif, best[0], idx)
+                aggregates, Ns = aggr_fct([m_diff], len(m_diff), fwd_metric, rev_metric, sa)
+                if opt_dir == "min":
+                    best_aggregate = np.nanmin(aggregates[0])
+                else:
+                    best_aggregate = np.nanmax(aggregates[0])
+                if np.isnan(best_aggregate):
+                    # TODO: can this ever occur?
+                    logging.getLogger('comos').error(f"unhandled exception: found no motif aggregate for motif {m_diff}")
+                    exit(1)
+                if opt_dir == "min":
+                    poi = np.nanargmin(aggregates[0])
+                else:
+                    poi = np.nanargmax(aggregates[0])
+                N = min(Ns[0][poi], len(mu)-1)
+                stddev = (best_aggregate - mu[N]) / sigma[N]
+                if (opt_dir == "min" and stddev >= thr) or (opt_dir == "max" and stddev <= thr):
+                    # do NOT keep combined motif, but motif i
+                    keep_combined = False
+                    drop_mi = False
+        if len(best[0]) <= len(d.loc[j].motif):
+            idx, ident, _ = motif_contains(d.loc[j].motif, best[0])
+            if idx is not None:
+                m_diff = motif_diff(d.loc[j].motif, best[0], idx)
+                aggregates, Ns = aggr_fct([m_diff], len(m_diff), fwd_metric, rev_metric, sa)
+                if opt_dir == "min":
+                    best_aggregate = np.nanmin(aggregates[0])
+                else:
+                    best_aggregate = np.nanmax(aggregates[0])
+                if np.isnan(best_aggregate):
+                    # TODO: can this ever occur?
+                    logging.getLogger('comos').error(f"unhandled exception: found no motif aggregate for motif {m_diff}")
+                    exit(1)
+                if opt_dir == "min":
+                    poi = np.nanargmin(aggregates[0])
+                else:
+                    poi = np.nanargmax(aggregates[0])
+                N = min(Ns[0][poi], len(mu)-1)
+                stddev = (best_aggregate - mu[N]) / sigma[N]
+                if (opt_dir == "min" and stddev >= thr) or (opt_dir == "max" and stddev <= thr):
+                    # do NOT keep combined motif, but motif j
+                    keep_combined = False
+                    drop_mj = False
+    return best, keep_combined, drop_mi, drop_mj
+
 def reduce_motifs(d, sa, max_motif_len, mu, sigma, fwd_metric, rev_metric, aggr_fct, opt_dir, thr, ambiguity_thr, ambiguity_min_sites, ambiguity_min_tests):
     d = d.copy().sort_values(['N','stddevs'], ascending=[False,True])
     d['typeI'] = d.motif.str.contains('NN')
@@ -1041,126 +1124,167 @@ def reduce_motifs(d, sa, max_motif_len, mu, sigma, fwd_metric, rev_metric, aggr_
                     if idx is not None:
                         pruned = prune_edges(sG, list(sG.out_edges(j)), d)
                         sG.remove_node(j)
-                        d = d.drop(pruned)
                         logging.getLogger('comos').debug(f"Motif {d.loc[i, 'motif']} found in TypeI motif {d.loc[j, 'motif']}, pruned {len(pruned)+1} nodes")
+                        d = d.drop(pruned)
                         changed = True
                         break
         # reduce the remaining graph
         d = resolve_motif_graph(sG, d, sa, max_motif_len, mu, sigma, fwd_metric, rev_metric, aggr_fct, opt_dir, thr, ambiguity_thr)
     d = d.loc[d['pass']]
-
-    d = d.drop(columns=['mlen', 'slen', 'pass', 'to_prune'])
-
+    d = d.drop(columns=['mlen', 'slen', 'pass', 'to_prune']).sort_index()
     logging.info(f"{len(d)} canonical motifs remaining after removing nested motifs:")
     print(d)
 
+    # Filter canonical motifs
+    # try to find missing reverse complements of TypeI motifs
+    changed = True
+    while changed == True:
+        changed = False
+        # identify reverse complements of each other
+        d['rc'] = None
+        for i in d.index:
+            for j in d.index:
+                if reverse_complement(d.loc[j, 'motif']) == d.loc[i, 'motif']:
+                    d.loc[i, 'rc'] = j
+        for i in d.loc[d.typeI & (d.rc.isin([None]))].index:
+            for j in d.loc[d.typeI].index:
+                idx, ident, diff = motif_contains(reverse_complement(d.loc[i].motif), d.loc[j].motif)
+                if idx is not None and len(diff) == 1:
+                    # score the motif
+                    motif = reverse_complement(d.loc[j].motif)
+                    aggregates, Ns = aggr_fct([motif], len(motif), fwd_metric, rev_metric, sa)
+                    if opt_dir == "min":
+                        best_aggregate = np.nanmin(aggregates[0])
+                    else:
+                        best_aggregate = np.nanmax(aggregates[0])
+                    if np.isnan(best_aggregate):
+                        # TODO: can this ever occur?
+                        logging.getLogger('comos').error(f"unhandled exception: found no motif aggregate for motif {motif}")
+                        exit(1)
+                    if opt_dir == "min":
+                        poi = np.nanargmin(aggregates[0])
+                    else:
+                        poi = np.nanargmax(aggregates[0])
+                    N = min(Ns[0][poi], len(mu)-1)
+                    stddev = (best_aggregate - mu[N]) / sigma[N]
+                    # add to df
+                    new = pd.Series([motif, poi, aggregates[0][poi], Ns[0][poi], stddev, norm().cdf(stddev), True, i], index=d.columns)
+                    logging.info(f"Motif {d.loc[j].motif} is contained in RC of motif {d.loc[i].motif} which misses a RC --> keep {new.motif}:{poi} ({new.N}, {new.stddevs:.2f}) over {d.loc[i].motif}:{d.loc[i].poi}({d.loc[i].N}, {d.loc[i].stddevs:.2f})")
+                    if ~d.motif.isin([new.motif]).any():
+                        d.loc[d.index.max()+1] = new
+                    d = d.drop(i)
+                    changed = True
+                    break
+                idx, ident, diff = motif_contains(reverse_complement(d.loc[j].motif), d.loc[i].motif)
+                if idx is not None and len(diff) == 1 and not d.loc[j].rc:
+                    # score the motif
+                    motif = reverse_complement(d.loc[i].motif)
+                    aggregates, Ns = aggr_fct([motif], len(motif), fwd_metric, rev_metric, sa)
+                    if opt_dir == "min":
+                        best_aggregate = np.nanmin(aggregates[0])
+                    else:
+                        best_aggregate = np.nanmax(aggregates[0])
+                    if np.isnan(best_aggregate):
+                        # TODO: can this ever occur?
+                        logging.getLogger('comos').error(f"unhandled exception: found no motif aggregate for motif {motif}")
+                        exit(1)
+                    if opt_dir == "min":
+                        poi = np.nanargmin(aggregates[0])
+                    else:
+                        poi = np.nanargmax(aggregates[0])
+                    N = min(Ns[0][poi], len(mu)-1)
+                    stddev = (best_aggregate - mu[N]) / sigma[N]
+                    # add to df
+                    new = pd.Series([motif, poi, aggregates[0][poi], Ns[0][poi], stddev, norm().cdf(stddev), True, i], index=d.columns)
+                    logging.info(f"Motif {d.loc[i].motif} is contained in RC of motif {d.loc[j].motif}, both missing a RC --> keep {new.motif}:{poi} ({new.N}, {new.stddevs:.2f}) over {d.loc[j].motif}:{d.loc[j].poi}({d.loc[j].N}, {d.loc[j].stddevs:.2f})")
+                    if ~d.motif.isin([new.motif]).any():
+                        d.loc[d.index.max()+1] = new
+                    d = d.drop(j)
+                    changed = True
+                    break
+            if changed:
+                break
+    
+    logging.info(f"{len(d)} canonical motifs remaining after rule-based filtering:")
+    print(d)
+
+    # combine motifs
     changed = True
     tested = set()
     while changed == True:
         changed = False
-        for i in range(0,len(d)):
-            for j in range(i+1,len(d)):
-                if d.iloc[i].typeI != d.iloc[j].typeI:
-                    continue
-                if ((d.iloc[i].motif, d.iloc[i].poi), (d.iloc[j].motif, d.iloc[j].poi)) in tested:
-                    continue
-                tested.add(((d.iloc[i].motif, d.iloc[i].poi), (d.iloc[j].motif, d.iloc[j].poi)))
+        # find reverse complements
+        d['rc'] = None
+        for i in d.index:
+            for j in d.index:
+                if reverse_complement(d.loc[j, 'motif']) == d.loc[i, 'motif']:
+                    d.loc[i, 'rc'] = j
 
-                combined_motifs = combine_motifs(d.iloc[i].motif, d.iloc[j].motif)
-                aggregates, Ns = aggr_fct(combined_motifs, max_motif_len, fwd_metric, rev_metric, sa)
-                #calculate number of std. deviations
-                if opt_dir == "min":
-                    best = (None, None, np.inf, 0, np.inf, np.inf, d.iloc[i].typeI)
-                else:
-                    best = (None, None, -np.inf, 0, -np.inf, np.inf, d.iloc[i].typeI)
-                for (m,motif) in enumerate(combined_motifs):
-                    for poi in get_pois(motif):
-                        N = min(Ns[m][poi], len(mu)-1)
-                        stddevs = (aggregates[m][poi] - mu[N]) / sigma[N]
-                        if (opt_dir == "min" and stddevs < best[4]) or (opt_dir == "max" and stddevs > best[4]):
-                            if (opt_dir == "min" and stddevs < thr) or (opt_dir == "max" and stddevs > thr):
-                                if ambiguity_thr is not None:
-                                    if not test_ambiguous(motif, sa, max_motif_len, mu, sigma, fwd_metric, rev_metric, aggr_fct, opt_dir, ambiguity_thr, min_N=ambiguity_min_sites ,min_tests=ambiguity_min_tests):
-                                        if d.iloc[i].typeI:
-                                            if test_ambiguous(reverse_complement(motif), sa, max_motif_len, mu, sigma, fwd_metric, rev_metric, aggr_fct, opt_dir, ambiguity_thr, min_N=ambiguity_min_sites, min_tests=ambiguity_min_tests):
-                                                logging.getLogger('comos').info(f'ambiguous test failed for combined motif {motif} but not for its RC --> kept.')
-                                            else:
-                                                continue
-                                        else:
-                                            continue
-                                # test if all exploded, canonical motifs of the combined motif are above the selection threshold
-                                if not test_exploded(motif, poi, sa, max_motif_len, mu, sigma, fwd_metric, rev_metric, aggr_fct, opt_dir, thr):
-                                    logging.getLogger('comos').debug(f'exploded motif test failed for combined motif {motif}')
-                                    continue
-                                if opt_dir == "min":
-                                    best = (motif, poi, aggregates[m][poi], Ns[m][poi], stddevs, norm().cdf(stddevs), d.iloc[i].typeI)
-                                else:
-                                    best = (motif, poi, aggregates[m][poi], Ns[m][poi], stddevs, 1. - norm().cdf(stddevs), d.iloc[i].typeI)
-                #logging.getLogger('comos').debug("comparison:", best[4], max(d.iloc[i].stddevs, d.iloc[j].stddevs))
-                if (opt_dir == "min" and best[4] < thr) or (opt_dir == "max" and best[4] > thr):
-                    keep_combined, drop_mi, drop_mj = True, True, True
-                    if len(best[0]) <= len(d.iloc[i].motif):
-                        idx, ident, _ = motif_contains(d.iloc[i].motif, best[0])
-                        if idx is not None:
-                            m_diff = motif_diff(d.iloc[i].motif, best[0], idx)
-                            aggregates, Ns = aggr_fct([m_diff], len(m_diff), fwd_metric, rev_metric, sa)
-                            if opt_dir == "min":
-                                best_mean = np.nanmin(aggregates[0])
-                            else:
-                                best_mean = np.nanmax(aggregates[0])
-                            if np.isnan(best_mean):
-                                # TODO: can this ever occur?
-                                logging.getLogger('comos').error(f"unhandled exception: found no motif aggregate for motif {m_diff}")
-                                exit(1)
-                            if opt_dir == "min":
-                                poi = np.nanargmin(aggregates[0])
-                            else:
-                                poi = np.nanargmax(aggregates[0])
-                            N = min(Ns[0][poi], len(mu)-1)
-                            stddev = (best_mean - mu[N]) / sigma[N]
-                            if (opt_dir == "min" and stddev >= thr) or (opt_dir == "max" and stddev <= thr):
-                                # do NOT keep combined motif, but mi
-                                keep_combined = False
-                                drop_mi = False
-                    if len(best[0]) <= len(d.iloc[j].motif):
-                        idx, ident, _ = motif_contains(d.iloc[j].motif, best[0])
-                        if idx is not None:
-                            m_diff = motif_diff(d.iloc[j].motif, best[0], idx)
-                            aggregates, Ns = aggr_fct([m_diff], len(m_diff), fwd_metric, rev_metric, sa)
-                            if opt_dir == "min":
-                                best_mean = np.nanmin(aggregates[0])
-                            else:
-                                best_mean = np.nanmax(aggregates[0])
-                            if np.isnan(best_mean):
-                                # TODO: can this ever occur?
-                                logging.getLogger('comos').error(f"unhandled exception: found no motif mean for motif {m_diff}")
-                                exit(1)
-                            if opt_dir == "min":
-                                poi = np.nanargmin(aggregates[0])
-                            else:
-                                poi = np.nanargmax(aggregates[0])
-                            N = min(Ns[0][poi], len(mu)-1)
-                            stddev = (best_mean - mu[N]) / sigma[N]
-                            if stddev >= thr:
-                                # do NOT keep combined motif, but mj
-                                keep_combined = False
-                                drop_mj = False
+        for i in d.index:
+            for j in d.loc[i+1:].index:
+                if d.loc[i].typeI != d.loc[j].typeI:
+                    continue
+                if (d.loc[i].motif, d.loc[j].motif) in tested:
+                    continue
+                tested.add((d.loc[i].motif, d.loc[j].motif))
+
+                best, keep_combined, drop_mi, drop_mj = test_combine_motifs(d, i, j, sa, max_motif_len, mu, sigma, fwd_metric, rev_metric, aggr_fct, opt_dir, thr, ambiguity_thr, ambiguity_min_sites, ambiguity_min_tests)
+                if best[0]:
                     if keep_combined:
-                        new_motif = pd.Series(best, index=d.columns)
-                        logging.getLogger('comos').debug(f"combined {d.iloc[i].motif}:{d.iloc[i].poi} ({d.iloc[i].N}, {d.iloc[i].stddevs:.2f}) and {d.iloc[j].motif}:{d.iloc[j].poi} ({d.iloc[j].N}, {d.iloc[j].stddevs:.2f}) to {best[0]}:{best[1]} ({best[3]}, {best[4]:.2f})")
-                        # drop / replace entries
-                        d.iloc[i] = new_motif
-                        d = d.drop(d.index[j])
+                        new = pd.Series(best+[None], index=d.columns)
+                        if d.loc[i].rc == j or d.loc[i].rc == i or d.loc[j].rc == j:
+                            # accept only if new motif is palindromic
+                            if not new.motif == reverse_complement(new.motif):
+                                logging.getLogger('comos').info(f"rejected {new.motif}:{new.poi} ({new.N}, {new.stddevs:.2f}) combined from {d.loc[i].motif} and {d.loc[j].motif} because it is not palindromic")
+                                break
+                        elif (d.loc[i].rc and d.loc[i].rc != j) and (d.loc[j].rc and d.loc[j].rc != i):
+                            # accept only if the respective RCs combine as well and the combination is the RC of this new motif
+                            best, keep_combined, drop_mi, drop_mj = test_combine_motifs(d, d.loc[i].rc, d.loc[j].rc, sa, max_motif_len, mu, sigma, fwd_metric, rev_metric, aggr_fct, opt_dir, thr, ambiguity_thr, ambiguity_min_sites, ambiguity_min_tests)
+                            if keep_combined:
+                                new2 = pd.Series(best+[None], index=d.columns)
+                                if new.motif == reverse_complement(new2.motif):
+                                    logging.getLogger('comos').info(f"combined {d.loc[i].motif}:{d.loc[i].poi} ({d.loc[i].N}, {d.loc[i].stddevs:.2f}) and {d.loc[j].motif}:{d.loc[j].poi} ({d.loc[j].N}, {d.loc[j].stddevs:.2f}) to {new.motif}:{new.poi} ({new.N}, {new.stddevs:.2f})")
+                                    logging.getLogger('comos').info(f"and RCs  {d.loc[d.loc[i].rc].motif}:{d.loc[d.loc[i].rc].poi} ({d.loc[d.loc[i].rc].N}, {d.loc[d.loc[i].rc].stddevs:.2f}) and {d.loc[d.loc[j].rc].motif}:{d.loc[d.loc[j].rc].poi} ({d.loc[d.loc[j].rc].N}, {d.loc[d.loc[j].rc].stddevs:.2f}) to {new.motif}:{new.poi} ({new.N}, {new.stddevs:.2f})")
+                                    if ~d.motif.isin([new.motif]).any():
+                                        d.loc[d.index.max()+1] = new
+                                    if ~d.motif.isin([new2.motif]).any():
+                                        d.loc[d.index.max()+1] = new2
+                                    d = d.drop(d.loc[i].rc)
+                                    d = d.drop(d.loc[j].rc)
+                                    d = d.drop(i)
+                                    d = d.drop(j)
+                                    changed = True
+                                    break
+                                else:
+                                    logging.getLogger('comos').info(f"rejected {new.motif}:{new.poi} ({new.N}, {new.stddevs:.2f}) and {new2.motif}:{new2.poi} ({new2.N}, {new2.stddevs:.2f}) combined from ({d.loc[i].motif}, {d.loc[j].motif}) and ({d.loc[d.loc[i].rc].motif}, {d.loc[d.loc[j].rc].motif}) because they are not RCs of each other")
+                                    break
+                            else:
+                                logging.getLogger('comos').info(f"rejected {new.motif}:{new.poi} ({new.N}, {new.stddevs:.2f}) combined from {d.loc[i].motif} and {d.loc[j].motif} because the respective RCs do not combine")
+                                break
+                        elif (d.loc[i].rc and d.loc[i].rc != j) and not d.loc[j].rc:
+                            # do not allow. TODO: check if there are scenarios where this should be possible
+                            logging.getLogger('comos').info(f"rejected {new.motif}:{new.poi} ({new.N}, {new.stddevs:.2f}) and combined from {d.loc[i].motif} and {d.loc[j].motif} because {d.loc[i].motif} has a RC")
+                            break
+                        elif not d.loc[i].rc and (d.loc[j].rc and d.loc[j].rc != i):
+                            # do not allow. TODO: check if there are scenarios where this should be possible
+                            logging.getLogger('comos').info(f"rejected {new.motif}:{new.poi} ({new.N}, {new.stddevs:.2f}) and combined from {d.loc[i].motif} and {d.loc[j].motif} because {d.loc[j].motif} has a RC")
+                            break
+                        logging.getLogger('comos').info(f"combined {d.loc[i].motif}:{d.loc[i].poi} ({d.loc[i].N}, {d.loc[i].stddevs:.2f}) and {d.loc[j].motif}:{d.loc[j].poi} ({d.loc[j].N}, {d.loc[j].stddevs:.2f}) to {best[0]}:{best[1]} ({best[3]}, {best[4]:.2f})")
+                        # drop previous entries and add combined
+                        if ~d.motif.isin([new.motif]).any():
+                            d.loc[d.index.max()+1] = new
+                        d = d.drop(i)
+                        d = d.drop(j)
                         changed = True
                         break
                     elif drop_mi and not drop_mj:
-                        logging.getLogger('comos').debug(f"dropped {d.iloc[i].motif}:{d.iloc[i].poi} ({d.iloc[i].N}, {d.iloc[i].stddevs:.2f}) for {d.iloc[j].motif}:{d.iloc[j].poi} ({d.iloc[j].N}, {d.iloc[j].stddevs:.2f}) considering {best[0]}:{best[1]} ({best[3]}, {best[4]:.2f})")
-                        d = d.drop(d.index[i])
+                        logging.getLogger('comos').info(f"dropped {d.loc[i].motif}:{d.loc[i].poi} ({d.loc[i].N}, {d.loc[i].stddevs:.2f}) for {d.loc[j].motif}:{d.loc[j].poi} ({d.loc[j].N}, {d.loc[j].stddevs:.2f}) considering {best[0]}:{best[1]} ({best[3]}, {best[4]:.2f})")
+                        d = d.drop(i)
                         changed = True
                         break
                     elif drop_mj and not drop_mi:
-                        logging.getLogger('comos').debug(f"dropped {d.iloc[j].motif}:{d.iloc[j].poi} ({d.iloc[j].N}, {d.iloc[j].stddevs:.2f}) for {d.iloc[i].motif}:{d.iloc[i].poi} ({d.iloc[i].N}, {d.iloc[i].stddevs:.2f}) considering {best[0]}:{best[1]} ({best[3]}, {best[4]:.2f})")
-                        d = d.drop(d.index[j])
+                        logging.getLogger('comos').info(f"dropped {d.loc[j].motif}:{d.loc[j].poi} ({d.loc[j].N}, {d.loc[j].stddevs:.2f}) for {d.loc[i].motif}:{d.loc[i].poi} ({d.loc[i].N}, {d.loc[i].stddevs:.2f}) considering {best[0]}:{best[1]} ({best[3]}, {best[4]:.2f})")
+                        d = d.drop(j)
                         changed = True
                         break
                     else:
@@ -1177,6 +1301,7 @@ def reduce_motifs(d, sa, max_motif_len, mu, sigma, fwd_metric, rev_metric, aggr_
                     
             if changed:
                 break
+
     # remove reverse complements of non-palindromic motifs
     # keep the ones with better score
     d['representative'] = d['motif']
@@ -1225,8 +1350,8 @@ def main(args):
     if os.path.exists(cache_fp) and args.cache:
         tstart = time.time()
         df = pd.read_pickle(cache_fp)
-        logging.getLogger('comos').info(f"Parsed cached RDS data in {tstop - tstart:.2f} seconds")
         tstop = time.time()
+        logging.getLogger('comos').info(f"Parsed cached RDS data in {tstop - tstart:.2f} seconds")
     else:
         tstart = time.time()
         df = parse_diff_file(args.rds, contig_id)
@@ -1324,10 +1449,10 @@ def main(args):
         for m,row in res.iterrows():
             print(f"\nAmbiguous-Test results for motif {m}:{int(row.poi)}")
             passed = test_ambiguous(m, sa, len(m), mu, sigma, fwd_metric, rev_metric, aggr_fct, opt_dir, ambiguity_thr, min_N=args.ambiguity_min_sites, debug=True, min_tests=args.ambiguity_min_tests)
-            print(passed)
+            print("Passed:", passed)
             print(f"\nExploded-Test results for motif {m}:{int(row.poi)}")
             passed = test_exploded(m, int(row.poi), sa, len(m), mu, sigma, fwd_metric, rev_metric, aggr_fct, opt_dir, selection_thr, debug=True)
-            print(passed)
+            print("Passed:", passed)
             print()
         
         if args.plot:
