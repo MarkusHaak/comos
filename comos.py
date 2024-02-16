@@ -112,7 +112,7 @@ def parse_args():
         help='RDS Rdata file containing the sample differences.')
     io_grp.add_argument(
         '--out', '-o', 
-        default='./cosmos_output',
+        default='./comos_output',
         help='Folder for the output files.')
     io_grp.add_argument(
         '--plot', '-p',
@@ -223,6 +223,12 @@ def parse_args():
         nargs='+',
         help='Analyze the given IUPAC motifs.' 
     )
+    misc_grp.add_argument(
+        '--min-seq-len',
+        type=int,
+        default=200_000,
+        help="Minimum length of sequnces in the Multiple-Fasta to be perform a motif search on them."
+    )
 
 
     parser.add_argument('--debug', action='store_true')
@@ -236,6 +242,8 @@ def parse_args():
         exit(1)
     if not os.path.exists(args.out):
         os.makedirs(args.out)
+    if args.cache and not os.path.exists(args.cache):
+        os.makedirs(args.cache)
     args.genome = os.path.abspath(args.genome)
     args.rds = os.path.abspath(args.rds)
 
@@ -246,13 +254,12 @@ def parse_args():
 
     return args
 
-def parse_diff_file(fp, contig_id):
+def parse_diff_file(fp):
     df = pyreadr.read_r(fp)[None]
     # correct positions
     df['position'] = df['position'].astype(int) - 1 + 3 # convert to 0-based indexing
     df.loc[df.dir == 'rev', 'position'] += 1
     df = df.set_index(df.position)
-    df = df.loc[df.contig == contig_id]
     return df
 
 def parse_largest_contig(fp, cache_dir='tmp'):
@@ -267,6 +274,12 @@ def parse_largest_contig(fp, cache_dir='tmp'):
             seq = record.seq
             sa = suffix_array.get_suffix_array(record.id, record.seq, cache_dir=cache_dir)
     return seq, sa, contig_id, n
+
+def parse_contigs(fp):
+    contigs = {}
+    for record in SeqIO.parse(fp, "fasta"):
+        contigs[record.id] = record.seq
+    return contigs
 
 def compute_expsumlogp(df, seq, min_cov, window, min_window_values, subtract_background=False):
     fwd_logp = np.full(len(seq), np.nan)
@@ -425,6 +438,10 @@ def plot_context_dependent_differences(motif, poi, sa, fwd_diff, rev_diff, ymax=
         plt.savefig(savepath, dpi=300)
     else:
         plt.show()
+    #time.sleep(0.1)
+    #plt.figure().clear()
+    #plt.close()
+    #plt.clf()
 
 def plot_diffs_with_complementary(motif, sa, fwd_diff, rev_diff, ymax=np.inf, offset=3, savepath=None, absolute=True):
     mlen = len(motif)
@@ -506,6 +523,10 @@ def plot_diffs_with_complementary(motif, sa, fwd_diff, rev_diff, ymax=np.inf, of
         plt.savefig(savepath, dpi=300)
     else:
         plt.show()
+    #time.sleep(0.1)
+    #plt.figure().clear()
+    #plt.close()
+    #plt.clf()
 
 def func(x, a, b):
     # x, a, b, c
@@ -568,7 +589,7 @@ def normal_approx(d):
 def plot_motif_scores(results, mu, sigma, thr=6., savepath=None):
     fig,ax = plt.subplots(figsize=(6,6))
     ax.scatter(results.N,results.val,s=1,alpha=0.25, color='black')
-    X = np.linspace(0,5000, 1000)
+    X = np.linspace(0,mu.shape[0]-1, 500)
     ax.plot(X, mu[X.astype(int)], color='C0')
     ax.plot(X, mu[X.astype(int)] + thr*sigma[X.astype(int)], color='C0', linestyle=':')
     #ax.plot(X, mu[X.astype(int)] - thr*sigma[X.astype(int)], color='C0', linestyle=':')
@@ -1027,7 +1048,7 @@ def reduce_motifs(d, sa, max_motif_len, mu, sigma, fwd_metric, rev_metric, aggr_
         if n_excluded:
             logging.info(f"Excluded {n_excluded} motifs because they did not pass ambiguity testing.")
         #d = d.loc[d['pass']].drop(['pass'], axis=1)
-    logging.getLogger('comos').info(f"{len(d.loc[d['pass']])} motifs after ambiguity testing:")
+    logging.getLogger('comos').info(f"{len(d.loc[d['pass']])} motifs after ambiguity testing")
     print(d.loc[d['pass']].sort_values("stddevs", ascending=(opt_dir=="min")))
     
     # removing nested canonical motifs
@@ -1058,12 +1079,18 @@ def reduce_motifs(d, sa, max_motif_len, mu, sigma, fwd_metric, rev_metric, aggr_
                 G.add_edge(i, j, weight=row.slen - d.loc[i, 'slen'])
     n_sGs = len([G.subgraph(c) for c in nx.connected_components(G.to_undirected()) if np.any(d.loc[list(c), 'pass'])])
     G.remove_edges_from([(f, t) for f,t,d in G.edges.data() if d['weight'] > 1])
-    sGs = [G.subgraph(c).copy() for c in nx.connected_components(G.to_undirected()) if np.any(d.loc[list(c), 'pass'])]
+    sGs = []
+    for c in nx.connected_components(G.to_undirected()):
+        sG = G.subgraph(c).copy()
+        # drop entries that are not connected to any other by nesting and did not pass filtering
+        if ~np.any(d.loc[list(sG), 'pass']):
+            d = d.drop(list(sG))
+        else:
+            sGs.append(sG)
     if len(sGs) != n_sGs:
         # TODO : handle this, e.g. by keeping "longest" paths between any two nodes?
         logging.getLogger('comos').warning(f"Unhandled case: Number of subgraphs changed from {n_sGs} to {len(sGs)} by removing edges with >1 edit distance between motifs.")
     logging.getLogger('comos').info(f"{len(sGs)} subgraphs in nested motif network")
-    sGs = [sG for sG in sGs if np.any(d.loc[list(sG), 'pass'])]
     logging.getLogger('comos').info(f"{len(sGs)} subgraphs with any valid motif")
 
     for sG in sGs:
@@ -1135,11 +1162,13 @@ def reduce_motifs(d, sa, max_motif_len, mu, sigma, fwd_metric, rev_metric, aggr_
                         pruned = prune_edges(sG, list(sG.out_edges(j)), d)
                         sG.remove_node(j)
                         logging.getLogger('comos').debug(f"Motif {d.loc[i, 'motif']} found in biparite motif {d.loc[j, 'motif']}, pruned {len(pruned)+1} nodes")
+                        d = d.drop(j)
                         d = d.drop(pruned)
                         changed = True
                         break
         # reduce the remaining graph
         d = resolve_motif_graph(sG, d, sa, max_motif_len, mu, sigma, fwd_metric, rev_metric, aggr_fct, opt_dir, thr, ambiguity_thr, bases=bases)
+    #breakpoint()
     d = d.loc[d['pass']]
     d = d.drop(columns=['mlen', 'slen', 'pass', 'to_prune']).sort_index()
     logging.info(f"{len(d)} canonical motifs remaining after removing nested motifs:")
@@ -1345,97 +1374,78 @@ def is_palindromic(motif):
     return reverse_complement(motif) == motif
 
 def main(args):
-    tstart = time.time()
-    seq, sa, contig_id, n_contigs = parse_largest_contig(args.genome, args.cache)
-    tstop = time.time()
-    logging.getLogger('comos').info(f"{'Loaded' if args.cache else 'Created'} Index in {tstop - tstart:.2f} seconds")
-    if n_contigs > 1: # TODO: analyze all contigs
-        logging.getLogger('comos').warning(
-            f"Dataset contains {n_contigs} contig(s), "\
-            f"only {contig_id} of length {len(seq)} is analyzed")
-    else:
-        logging.getLogger('comos').info(f"Analyzing contig {contig_id} of length {len(seq):,} bp")
+    #seq, sa, contig_id, n_contigs = parse_largest_contig(args.genome, args.cache)
+    contigs = parse_contigs(args.genome)
+    sufficient_length = [contig_id for contig_id, seq in contigs.items() if len(seq) >= args.min_seq_len]
+    logging.getLogger('comos').info(f"Dataset contains {len(contigs)} contig(s)")
+    if not sufficient_length:
+        logging.getLogger('comos').error(f"No sequence in {args.genome} is of sufficient length of >= {args.min_seq_len:,} bp, please adjust argument --min-seq-len")
+        exit(1)
+    if len(sufficient_length) < len(contigs):
+        logging.getLogger('comos').warning(f"Only {len(sufficient_length)} of >= {args.min_seq_len:,} bp are analyzed")
     
     cache_fp = os.path.join(args.cache, f"{os.path.abspath(args.rds).replace('/','_')}.pkl")
     if os.path.exists(cache_fp) and args.cache:
         tstart = time.time()
-        df = pd.read_pickle(cache_fp)
+        df_all = pd.read_pickle(cache_fp)
         tstop = time.time()
         logging.getLogger('comos').info(f"Parsed cached RDS data in {tstop - tstart:.2f} seconds")
     else:
         tstart = time.time()
-        df = parse_diff_file(args.rds, contig_id)
+        df_all = parse_diff_file(args.rds)
         tstop = time.time()
         logging.getLogger('comos').info(f"Parsed RDS file in {tstop - tstart:.2f} seconds")
         if args.cache:
-            df.to_pickle(cache_fp)
+            df_all.to_pickle(cache_fp)
     
-    if args.metric == "expsumlogp":
-        fwd_metric, rev_metric = compute_expsumlogp(df, seq, args.min_cov, args.window, args.min_window_values, args.subtract_background)
-        opt_dir = "min"
-        selection_thr = -args.selection_thr
-        ambiguity_thr = -args.ambiguity_thr
-    elif args.metric == "meanabsdiff":
-        fwd_metric, rev_metric = compute_meanabsdiff(df, seq, args.min_cov, args.window, args.min_window_values, args.subtract_background)
-        opt_dir = "max"
-        selection_thr = args.selection_thr
-        ambiguity_thr = args.ambiguity_thr
-    if args.aggregate == "mean":
-        aggr_fct = suffix_array.motif_means
-    elif args.aggregate == "median":
-        aggr_fct = suffix_array.motif_medians
+    for contig_id in sufficient_length:
+        contig_dir = os.path.join(args.out, contig_id)
+        if not os.path.exists(contig_dir):
+            os.makedirs(contig_dir)
+        print()
+        df = df_all.loc[df_all.contig == contig_id]
 
-    canon_motifs = get_seq_index_combinations(args.min_k, args.max_k, args.min_g, args.max_g, list(args.bases), 0)
-    all_canon_motifs = list(canon_motifs.keys())
-    logging.getLogger('comos').info(f"Analyzing {len(canon_motifs):,} canonical motifs and "\
-        f"{sum([len(canon_motifs[i]) for i in canon_motifs]):,} indices within these motifs")
-    logging.getLogger('comos').info(f"Using {args.metric} metric with {args.aggregate} aggregation of site metrics over {args.window} nt windows (min {args.min_window_values} per window){', with background substraction' if args.subtract_background else ''}")
-    # do computation
-    cache_fp = os.path.join(args.cache, f"{contig_id}_{args.bases}_{args.metric}_{args.aggregate}_c{args.min_cov}_w{args.window}_wv{args.min_window_values}_b{args.subtract_background}_k{args.min_k}-{args.max_k}_g{args.min_g}-{args.max_g}.pkl")
-    if os.path.exists(cache_fp) and args.cache:
-        tstart = time.time()
-        with open(cache_fp, 'rb') as f:
-            aggr_metric, aggr_metric_counts = pickle.load(f)
-        tstop = time.time()
-        logging.getLogger('comos').info(f"Loaded canonical motif scores from cache in {tstop - tstart:.2f} seconds")
-    else:
-        tstart = time.time()
-        aggr_metric, aggr_metric_counts = aggr_fct(all_canon_motifs, args.max_k + args.max_g, fwd_metric, rev_metric, sa, bases=args.bases)
-        tstop = time.time()
-        logging.getLogger('comos').info(f"Computed canonical motif scores in {tstop - tstart:.2f} seconds")
-        if args.cache:
-            with open(cache_fp, 'wb') as f:
-                pickle.dump((aggr_metric, aggr_metric_counts), f)
+        logging.getLogger('comos').info(f"Analyzing contig {contig_id} of length {len(contigs[contig_id]):,}")
+        seq = contigs[contig_id]
+        sa = suffix_array.get_suffix_array(contig_id, seq, cache_dir=args.cache)
 
-    with warnings.catch_warnings():
-        warnings.filterwarnings('ignore', r'All-NaN slice encountered')
-        if opt_dir == "min":
-            best = np.nanmin(aggr_metric, axis=1)
+        if args.metric == "expsumlogp":
+            fwd_metric, rev_metric = compute_expsumlogp(df, seq, args.min_cov, args.window, args.min_window_values, args.subtract_background)
+            opt_dir = "min"
+            selection_thr = -args.selection_thr
+            ambiguity_thr = -args.ambiguity_thr
+        elif args.metric == "meanabsdiff":
+            fwd_metric, rev_metric = compute_meanabsdiff(df, seq, args.min_cov, args.window, args.min_window_values, args.subtract_background)
+            opt_dir = "max"
+            selection_thr = args.selection_thr
+            ambiguity_thr = args.ambiguity_thr
+        if args.aggregate == "mean":
+            aggr_fct = suffix_array.motif_means
+        elif args.aggregate == "median":
+            aggr_fct = suffix_array.motif_medians
+
+        canon_motifs = get_seq_index_combinations(args.min_k, args.max_k, args.min_g, args.max_g, list(args.bases), 0)
+        all_canon_motifs = list(canon_motifs.keys())
+        logging.getLogger('comos').info(f"Analyzing {len(canon_motifs):,} canonical motifs and "\
+            f"{sum([len(canon_motifs[i]) for i in canon_motifs]):,} indices within these motifs")
+        logging.getLogger('comos').info(f"Using {args.metric} metric with {args.aggregate} aggregation of site metrics over {args.window} nt windows (min {args.min_window_values} per window){', with background substraction' if args.subtract_background else ''}")
+        # do computation
+        cache_fp = os.path.join(args.cache, f"{contig_id}_{args.bases}_{args.metric}_{args.aggregate}_c{args.min_cov}_w{args.window}_wv{args.min_window_values}_b{args.subtract_background}_k{args.min_k}-{args.max_k}_g{args.min_g}-{args.max_g}.pkl")
+        if os.path.exists(cache_fp) and args.cache:
+            tstart = time.time()
+            with open(cache_fp, 'rb') as f:
+                aggr_metric, aggr_metric_counts = pickle.load(f)
+            tstop = time.time()
+            logging.getLogger('comos').info(f"Loaded canonical motif scores from cache in {tstop - tstart:.2f} seconds")
         else:
-            best = np.nanmax(aggr_metric, axis=1)
-    mask = ~np.isnan(best)
-    results = pd.DataFrame(best, columns=['val'], index=all_canon_motifs)[mask]
-    if opt_dir == "min":
-        results['poi'] =  np.nanargmin(aggr_metric[mask], axis=1)
-    else:
-        results['poi'] =  np.nanargmax(aggr_metric[mask], axis=1)
-    results['N'] = aggr_metric_counts[mask][range(results['poi'].shape[0]), results['poi']]
-    results = results[['poi', 'val', 'N']] # change order of columns to match that in function reduce_motifs
+            tstart = time.time()
+            aggr_metric, aggr_metric_counts = aggr_fct(all_canon_motifs, args.max_k + args.max_g, fwd_metric, rev_metric, sa, bases=args.bases)
+            tstop = time.time()
+            logging.getLogger('comos').info(f"Computed canonical motif scores in {tstop - tstart:.2f} seconds")
+            if args.cache:
+                with open(cache_fp, 'wb') as f:
+                    pickle.dump((aggr_metric, aggr_metric_counts), f)
 
-    tstart = time.time()
-    mu, sigma = normal_approx(results)
-    tstop = time.time()
-    logging.getLogger('comos').info(f"Performed normal approximation in {tstop - tstart:.2f} seconds")
-    
-    results['stddevs'] = (results.val - mu[results.N]) / sigma[results.N]
-    if opt_dir == "min":
-        results['p-value'] = norm().cdf(results['stddevs'])
-    else:
-        results['p-value'] = 1.0 - norm().cdf(results['stddevs'])
-    results = results.reset_index().rename(columns={'index':'motif'})
-
-    if args.test_motifs:
-        aggr_metric, aggr_metric_counts = aggr_fct(args.test_motifs, np.max([len(m) for m in args.test_motifs]), fwd_metric, rev_metric, sa, bases=args.bases)
         with warnings.catch_warnings():
             warnings.filterwarnings('ignore', r'All-NaN slice encountered')
             if opt_dir == "min":
@@ -1443,75 +1453,101 @@ def main(args):
             else:
                 best = np.nanmax(aggr_metric, axis=1)
         mask = ~np.isnan(best)
-        res = pd.DataFrame(best, columns=['val'], index=args.test_motifs)[mask]
+        results = pd.DataFrame(best, columns=['val'], index=all_canon_motifs)[mask]
         if opt_dir == "min":
-            res['poi'] =  np.nanargmin(aggr_metric[mask], axis=1)
+            results['poi'] =  np.nanargmin(aggr_metric[mask], axis=1)
         else:
-            res['poi'] =  np.nanargmax(aggr_metric[mask], axis=1)
-        res['poi'] = res['poi'].astype('int32')
-        res['N'] = aggr_metric_counts[mask][range(res['poi'].shape[0]), res['poi']]
-        res = res[['poi', 'val', 'N']]
-        res['stddevs'] = (res.val - mu[np.clip(res.N, 1, len(mu)-1)]) / sigma[np.clip(res.N, 1, len(mu)-1)]
+            results['poi'] =  np.nanargmax(aggr_metric[mask], axis=1)
+        results['N'] = aggr_metric_counts[mask][range(results['poi'].shape[0]), results['poi']]
+        results = results[['poi', 'val', 'N']] # change order of columns to match that in function reduce_motifs
+
+        tstart = time.time()
+        mu, sigma = normal_approx(results)
+        tstop = time.time()
+        logging.getLogger('comos').info(f"Performed normal approximation in {tstop - tstart:.2f} seconds")
+        results['stddevs'] = (results.val - mu[results.N]) / sigma[results.N]
         if opt_dir == "min":
-            res['p-value'] = norm().cdf(res['stddevs'])
+            results['p-value'] = norm().cdf(results['stddevs'])
         else:
-            res['p-value'] = 1.0 - norm().cdf(res['stddevs'])
-        for m,row in res.iterrows():
-            print(f"\nAmbiguous-Test results for motif {m}:{int(row.poi)}")
-            passed = test_ambiguous(m, sa, len(m), mu, sigma, fwd_metric, rev_metric, aggr_fct, opt_dir, ambiguity_thr, min_N=args.ambiguity_min_sites, debug=True, min_tests=args.ambiguity_min_tests, bases=args.bases)
-            print("Passed:", passed)
-            print(f"\nExploded-Test results for motif {m}:{int(row.poi)}")
-            passed = test_exploded(m, int(row.poi), sa, len(m), mu, sigma, fwd_metric, rev_metric, aggr_fct, opt_dir, selection_thr, debug=True, bases=args.bases)
-            print("Passed:", passed)
-            print()
+            results['p-value'] = 1.0 - norm().cdf(results['stddevs'])
+        results = results.reset_index().rename(columns={'index':'motif'})
+
+        if args.test_motifs:
+            aggr_metric, aggr_metric_counts = aggr_fct(args.test_motifs, np.max([len(m) for m in args.test_motifs]), fwd_metric, rev_metric, sa, bases=args.bases)
+            with warnings.catch_warnings():
+                warnings.filterwarnings('ignore', r'All-NaN slice encountered')
+                if opt_dir == "min":
+                    best = np.nanmin(aggr_metric, axis=1)
+                else:
+                    best = np.nanmax(aggr_metric, axis=1)
+            mask = ~np.isnan(best)
+            res = pd.DataFrame(best, columns=['val'], index=args.test_motifs)[mask]
+            if opt_dir == "min":
+                res['poi'] =  np.nanargmin(aggr_metric[mask], axis=1)
+            else:
+                res['poi'] =  np.nanargmax(aggr_metric[mask], axis=1)
+            res['poi'] = res['poi'].astype('int32')
+            res['N'] = aggr_metric_counts[mask][range(res['poi'].shape[0]), res['poi']]
+            res = res[['poi', 'val', 'N']]
+            res['stddevs'] = (res.val - mu[np.clip(res.N, 1, len(mu)-1)]) / sigma[np.clip(res.N, 1, len(mu)-1)]
+            if opt_dir == "min":
+                res['p-value'] = norm().cdf(res['stddevs'])
+            else:
+                res['p-value'] = 1.0 - norm().cdf(res['stddevs'])
+            for m,row in res.iterrows():
+                print(f"\nAmbiguous-Test results for motif {m}:{int(row.poi)}")
+                passed = test_ambiguous(m, sa, len(m), mu, sigma, fwd_metric, rev_metric, aggr_fct, opt_dir, ambiguity_thr, min_N=args.ambiguity_min_sites, debug=True, min_tests=args.ambiguity_min_tests, bases=args.bases)
+                print("Passed:", passed)
+                print(f"\nExploded-Test results for motif {m}:{int(row.poi)}")
+                passed = test_exploded(m, int(row.poi), sa, len(m), mu, sigma, fwd_metric, rev_metric, aggr_fct, opt_dir, selection_thr, debug=True, bases=args.bases)
+                print("Passed:", passed)
+                print()
+            
+            if args.plot:
+                fwd_diff, rev_diff = compute_diffs(df, seq)
+                for m,row in res.iterrows():
+                    plot_context_dependent_differences(m, row.poi, sa, fwd_diff, rev_diff, savepath=os.path.join(contig_dir, f"{m}_{int(row.poi)}_median.png"))
+                    plot_diffs_with_complementary(m, sa, fwd_diff, rev_diff, savepath=os.path.join(contig_dir, f"{m}_{int(row.poi)}.png"), ymax=10., absolute=True)
+            res = res.reset_index().rename(columns={'index':'motif'})
+            print(res)
+            continue#exit()
+        if args.plot:
+            plot_motif_scores(results, mu, sigma, thr=selection_thr, savepath=os.path.join(contig_dir, f"scores_scatterplot.png"))
+        
+        if opt_dir == "min":
+            sel = (results.stddevs <= selection_thr)
+        else:
+            sel = (results.stddevs >= selection_thr)
+        logging.getLogger('comos').info(f"Selected {sel.sum():,} motifs based on selection threshold of {selection_thr} std. deviations.")
+        if sel.sum() == 0:
+            logging.getLogger('comos').warning("No motifs found given the current set of parameters.")
+            continue
+        #print(results.loc[sel])
+        tstart = time.time()
+        motifs_found = reduce_motifs(
+            results.loc[sel], 
+            sa, args.max_k + args.max_g, 
+            mu, sigma, 
+            fwd_metric, rev_metric,
+            aggr_fct, opt_dir,
+            thr=selection_thr, 
+            ambiguity_thr=ambiguity_thr,
+            ambiguity_min_sites=args.ambiguity_min_sites,
+            ambiguity_min_tests=args.ambiguity_min_tests,
+            bases=args.bases)
+        tstop = time.time()
+        logging.getLogger('comos').info(f"Performed motif reduction in {tstop - tstart:.2f} seconds")
+        motifs_found['palindromic'] = motifs_found['motif'].apply(is_palindromic)
+        motifs_found = motifs_found[['motif', 'poi', 'representative', 'bipartite', 'palindromic', 'val', 'N', 'stddevs', 'p-value']]
+        logging.getLogger('comos').info(f"Reduced to {len(motifs_found)} motifs in {len(motifs_found.representative.unique())} MTase groups:")
+        print(motifs_found.set_index(['representative', 'motif']).sort_values(by=['bipartite', 'palindromic', 'representative', 'stddevs'], ascending=[True, True, True, opt_dir=='min']))
         
         if args.plot:
             fwd_diff, rev_diff = compute_diffs(df, seq)
-            for m,row in res.iterrows():
-                plot_context_dependent_differences(m, row.poi, sa, fwd_diff, rev_diff, savepath=os.path.join(args.out, f"{m}_{int(row.poi)}_median.png"))
-                plot_diffs_with_complementary(m, sa, fwd_diff, rev_diff, savepath=os.path.join(args.out, f"{m}_{int(row.poi)}.png"), ymax=10., absolute=True)
-        res = res.reset_index().rename(columns={'index':'motif'})
-        print(res)
-        exit()
+            for r,row in motifs_found.loc[motifs_found.motif == motifs_found.representative].iterrows():
+                plot_diffs_with_complementary(row.motif, sa, fwd_diff, rev_diff, absolute=True, savepath=os.path.join(contig_dir, f"{row.motif}_{row.poi}.png"))
 
-    if args.plot:
-        plot_motif_scores(results, mu, sigma, thr=selection_thr, savepath=os.path.join(args.out, f"scores_scatterplot.png"))
-    
-    if opt_dir == "min":
-        sel = (results.stddevs <= selection_thr)
-    else:
-        sel = (results.stddevs >= selection_thr)
-    logging.getLogger('comos').info(f"Selected {sel.sum():,} motifs based on selection threshold of {selection_thr} std. deviations.")
-    #print(results.loc[sel])
-    tstart = time.time()
-    motifs_found = reduce_motifs(
-        results.loc[sel], 
-        sa, args.max_k + args.max_g, 
-        mu, sigma, 
-        fwd_metric, rev_metric,
-        aggr_fct, opt_dir,
-        thr=selection_thr, 
-        ambiguity_thr=ambiguity_thr,
-        ambiguity_min_sites=args.ambiguity_min_sites,
-        ambiguity_min_tests=args.ambiguity_min_tests,
-        bases=args.bases)
-    tstop = time.time()
-    logging.getLogger('comos').info(f"Performed motif reduction in {tstop - tstart:.2f} seconds")
-    motifs_found['Type'] = ""
-    gapped = motifs_found['motif'].str.contains('NNN')
-    motifs_found.loc[gapped, 'Type'] = "I"
-    motifs_found.loc[(~gapped) & (motifs_found['motif'].apply(is_palindromic)), 'Type'] = "II"
-    motifs_found.loc[motifs_found['Type'] == "", 'Type'] = "III"
-    motifs_found = motifs_found[['motif', 'poi', 'representative', 'Type', 'val', 'N', 'stddevs', 'p-value']]
-    logging.getLogger('comos').info(f"Reduced to {len(motifs_found)} motifs in {len(motifs_found.representative.unique())} MTase groups:")
-    print(motifs_found.set_index(['representative', 'motif']).sort_values(by=['Type', 'representative', 'stddevs'], ascending=[True, True, opt_dir=='min']))
-    
-    if args.plot:
-        fwd_diff, rev_diff = compute_diffs(df, seq)
-        for r,row in motifs_found.loc[motifs_found.motif == motifs_found.representative].iterrows():
-            plot_diffs_with_complementary(row.motif, sa, fwd_diff, rev_diff, absolute=True, savepath=os.path.join(args.out, f"{row.motif}_{row.poi}.png"))
-
-    motifs_found.to_csv(os.path.join(args.out, f"results.csv"))
+        motifs_found.to_csv(os.path.join(contig_dir, f"results.csv"))
     
 
 if __name__ == '__main__':
