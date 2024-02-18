@@ -103,13 +103,13 @@ def parse_args():
         )
     io_grp = parser.add_argument_group('Input/Output Options')
     io_grp.add_argument(
-        '--genome', '-g', 
+        '--fasta', 
         required=True,
-        help='Fasta file containing the genome contig(s).')
+        help='Fasta file containing contig(s).')
     io_grp.add_argument(
-        '--rds', '-r', 
+        '--mod', 
         required=True,
-        help='RDS Rdata file containing the sample differences.')
+        help='File containing modification information, either RDS Rdata file (.RDS) created with Nanodisco or bedMethyl file (.bed) from modkit.')
     io_grp.add_argument(
         '--out', '-o', 
         default='./comos_output',
@@ -165,7 +165,7 @@ def parse_args():
     )
     hyper_grp.add_argument(
         '--metric',
-        choices=["meanabsdiff", "expsumlogp"],
+        choices=["meanabsdiff", "expsumlogp", "meanmaxfrac"],
         default="meanabsdiff",
         help="Which metric to compute for each motif site."
     )
@@ -224,28 +224,33 @@ def parse_args():
         help='Analyze the given IUPAC motifs.' 
     )
     misc_grp.add_argument(
+        '--metagenome',
+        action="store_true",
+        help="Analyze contigs in the input fasta individually for MTase motifs."
+    )
+    misc_grp.add_argument(
         '--min-seq-len',
         type=int,
         default=200_000,
-        help="Minimum length of sequnces in the Multiple-Fasta to be perform a motif search on them."
+        help="Minimum length of metagenomic contigs in the Multiple-Fasta to be perform an initial motif search on them."
     )
 
 
     parser.add_argument('--debug', action='store_true')
     args = parser.parse_args()
 
-    if not os.path.exists(args.genome):
-        logging.getLogger('comos').error(f"Input file {args.genome} does not exist.")
+    if not os.path.exists(args.fasta):
+        logging.getLogger('comos').error(f"Input file {args.fasta} does not exist.")
         exit(1)
-    if not os.path.exists(args.rds):
-        logging.getLogger('comos').error(f"Input file {args.rds} does not exist.")
+    if not os.path.exists(args.mod):
+        logging.getLogger('comos').error(f"Input file {args.mod} does not exist.")
         exit(1)
     if not os.path.exists(args.out):
         os.makedirs(args.out)
     if args.cache and not os.path.exists(args.cache):
         os.makedirs(args.cache)
-    args.genome = os.path.abspath(args.genome)
-    args.rds = os.path.abspath(args.rds)
+    args.fasta = os.path.abspath(args.fasta)
+    args.mod = os.path.abspath(args.mod)
 
     # check hyperparameters
     if args.ambiguity_thr > args.selection_thr:
@@ -254,12 +259,26 @@ def parse_args():
 
     return args
 
-def parse_diff_file(fp):
+def parse_rds_file(fp):
     df = pyreadr.read_r(fp)[None]
     # correct positions
     df['position'] = df['position'].astype(int) - 1 + 3 # convert to 0-based indexing
     df.loc[df.dir == 'rev', 'position'] += 1
     df = df.set_index(df.position)
+    return df
+
+def parse_bed_file(fp):
+    df = pd.read_csv(
+        fp, 
+        sep='\s+', 
+        header=None, 
+        usecols=[0,1,3,5,9,10,11,12,13,14,15,16,17], 
+        names=['contig', 'position', 'modbase', 'strand', 'cov', 'fracmod', 'Nmod', 'Ncan', 'Nother', 'Ndel', 'Nfail', 'Ndiff', 'Nnocall'])
+    df['position'] = df['position'].astype(int)
+    df = df.set_index('position', drop=True)
+    df['dir'] = None
+    df.loc[df.strand == '+', 'dir'] = 'fwd'
+    df.loc[df.strand == '-', 'dir'] = 'rev'
     return df
 
 def parse_largest_contig(fp, cache_dir='tmp'):
@@ -328,6 +347,29 @@ def compute_meanabsdiff(df, seq, min_cov, window, min_window_values, subtract_ba
                                                         np.pad(rev_mean_abs_diff[:-dist], (dist,0), constant_values=np.nan)]), axis=1)
         return fwd_mean_abs_diff - fwd_background, rev_mean_abs_diff - rev_background
     return fwd_mean_abs_diff, rev_mean_abs_diff
+
+def compute_meanmaxfrac(df, seq, min_cov, window, min_window_values, subtract_background=False):
+    df = df.reset_index().sort_values("fracmod", ascending=False).groupby(['position', 'dir'], as_index=False).first().set_index('position')
+    fwd_frac = np.full(len(seq), np.nan)
+    sel = (df.dir == 'fwd') & ~pd.isna(df.fracmod) & \
+          (df['cov'] >= min_cov)
+    fwd_frac[df.loc[sel].index] = df.loc[sel, 'fracmod']
+    rev_frac = np.full(len(seq), np.nan)
+    sel = (df.dir == 'rev') & ~pd.isna(df.fracmod) & \
+          (df['cov'] >= min_cov)
+    rev_frac[df.loc[sel].index] = df.loc[sel, 'fracmod']
+    fwd_mean_max_frac = pd.Series(np.abs(fwd_frac)).rolling(window, center=True, min_periods=min_window_values).mean()
+    rev_mean_max_frac = pd.Series(np.abs(rev_frac)).rolling(window, center=True, min_periods=min_window_values).mean()
+    if subtract_background:
+        dist = round(window / 2 + 0.5)
+        with warnings.catch_warnings():
+            warnings.filterwarnings('ignore', r'All-NaN slice encountered')
+            fwd_background = np.nanmin(np.column_stack([np.pad(fwd_mean_max_frac[dist:], (0,dist), constant_values=np.nan), 
+                                                        np.pad(fwd_mean_max_frac[:-dist], (dist,0), constant_values=np.nan)]), axis=1)
+            rev_background = np.nanmin(np.column_stack([np.pad(rev_mean_max_frac[dist:], (0,dist), constant_values=np.nan), 
+                                                        np.pad(rev_mean_max_frac[:-dist], (dist,0), constant_values=np.nan)]), axis=1)
+        return fwd_mean_max_frac - fwd_background, rev_mean_max_frac - rev_background
+    return fwd_mean_max_frac, rev_mean_max_frac
 
 def get_seq_index_combinations(k_min, k_max, min_gap, max_gap, bases, blur):
     def get_indexes(comb, k):
@@ -551,8 +593,8 @@ def normal_approx(d):
     sigma = []
     window = lambda x : 20 + x
     #N = np.unique(np.linspace(1,d.N.max(),1000).astype(int))
-    N = np.unique(np.concatenate([np.geomspace(1,d.N.max(),500).astype(int), 
-                                  np.linspace(1,d.N.max(),1000).astype(int)]))
+    N = np.unique(np.concatenate([np.geomspace(1,d.N.max(),min(d.N.max()-1,500)).astype(int), 
+                                  np.linspace(1,d.N.max(),min(d.N.max()-1,1000)).astype(int)]))
     for n in N:
         sel = (d.N >= n - window(n)//2) & (d.N <= n + window(n)//2)
         sigma.append(d.loc[sel, 'val'].std())
@@ -589,7 +631,7 @@ def normal_approx(d):
 def plot_motif_scores(results, mu, sigma, thr=6., savepath=None):
     fig,ax = plt.subplots(figsize=(6,6))
     ax.scatter(results.N,results.val,s=1,alpha=0.25, color='black')
-    X = np.linspace(0,mu.shape[0]-1, 500)
+    X = np.linspace(0,mu.shape[0]-1, min(mu.shape[0]-1, 1000))
     ax.plot(X, mu[X.astype(int)], color='C0')
     ax.plot(X, mu[X.astype(int)] + thr*sigma[X.astype(int)], color='C0', linestyle=':')
     #ax.plot(X, mu[X.astype(int)] - thr*sigma[X.astype(int)], color='C0', linestyle=':')
@@ -923,7 +965,7 @@ def resolve_motif_graph(sG, d, sa, max_motif_len, mu, sigma, fwd_metric, rev_met
                     poi = np.nanargmin(aggregates[0])
                     N = min(Ns[0][poi], len(mu)-1)
                     stddev = (best - mu[N]) / sigma[N]
-                    if (opt_dir == "min" and stddev >= thr) or (opt_dir == "max" and stddev <= thr):
+                    if (opt_dir == "min" and stddev >= ambiguity_thr) or (opt_dir == "max" and stddev <= ambiguity_thr):
                         # drop root motif, keep longer ones
                         for u,v in by_index[idx]['edges']:
                             sG.remove_edge(u,v)
@@ -1374,27 +1416,30 @@ def is_palindromic(motif):
     return reverse_complement(motif) == motif
 
 def main(args):
-    #seq, sa, contig_id, n_contigs = parse_largest_contig(args.genome, args.cache)
-    contigs = parse_contigs(args.genome)
+    #seq, sa, contig_id, n_contigs = parse_largest_contig(args.fasta, args.cache)
+    contigs = parse_contigs(args.fasta)
     sufficient_length = [contig_id for contig_id, seq in contigs.items() if len(seq) >= args.min_seq_len]
     logging.getLogger('comos').info(f"Dataset contains {len(contigs)} contig(s)")
     if not sufficient_length:
-        logging.getLogger('comos').error(f"No sequence in {args.genome} is of sufficient length of >= {args.min_seq_len:,} bp, please adjust argument --min-seq-len")
+        logging.getLogger('comos').error(f"No sequence in {args.fasta} is of sufficient length of >= {args.min_seq_len:,} bp, please adjust argument --min-seq-len")
         exit(1)
     if len(sufficient_length) < len(contigs):
         logging.getLogger('comos').warning(f"Only {len(sufficient_length)} of >= {args.min_seq_len:,} bp are analyzed")
     
-    cache_fp = os.path.join(args.cache, f"{os.path.abspath(args.rds).replace('/','_')}.pkl")
+    cache_fp = os.path.join(args.cache, f"{os.path.abspath(args.mod).replace('/','_')}.pkl")
     if os.path.exists(cache_fp) and args.cache:
         tstart = time.time()
         df_all = pd.read_pickle(cache_fp)
         tstop = time.time()
-        logging.getLogger('comos').info(f"Parsed cached RDS data in {tstop - tstart:.2f} seconds")
+        logging.getLogger('comos').info(f"Parsed cached mod data in {tstop - tstart:.2f} seconds")
     else:
         tstart = time.time()
-        df_all = parse_diff_file(args.rds)
+        if args.mod.lower().endswith('.rds'):
+            df_all = parse_rds_file(args.mod)
+        elif args.mod.lower().endswith('.bed'):
+            df_all = parse_bed_file(args.mod)
         tstop = time.time()
-        logging.getLogger('comos').info(f"Parsed RDS file in {tstop - tstart:.2f} seconds")
+        logging.getLogger('comos').info(f"Parsed mod file in {tstop - tstart:.2f} seconds")
         if args.cache:
             df_all.to_pickle(cache_fp)
     
@@ -1416,6 +1461,11 @@ def main(args):
             ambiguity_thr = -args.ambiguity_thr
         elif args.metric == "meanabsdiff":
             fwd_metric, rev_metric = compute_meanabsdiff(df, seq, args.min_cov, args.window, args.min_window_values, args.subtract_background)
+            opt_dir = "max"
+            selection_thr = args.selection_thr
+            ambiguity_thr = args.ambiguity_thr
+        elif args.metric == "meanmaxfrac":
+            fwd_metric, rev_metric = compute_meanmaxfrac(df, seq, args.min_cov, args.window, args.min_window_values, args.subtract_background)
             opt_dir = "max"
             selection_thr = args.selection_thr
             ambiguity_thr = args.ambiguity_thr
@@ -1503,7 +1553,7 @@ def main(args):
                 print("Passed:", passed)
                 print()
             
-            if args.plot:
+            if args.plot and args.mod.lower().endswith(".rds"):
                 fwd_diff, rev_diff = compute_diffs(df, seq)
                 for m,row in res.iterrows():
                     plot_context_dependent_differences(m, row.poi, sa, fwd_diff, rev_diff, savepath=os.path.join(contig_dir, f"{m}_{int(row.poi)}_median.png"))
@@ -1542,7 +1592,7 @@ def main(args):
         logging.getLogger('comos').info(f"Reduced to {len(motifs_found)} motifs in {len(motifs_found.representative.unique())} MTase groups:")
         print(motifs_found.set_index(['representative', 'motif']).sort_values(by=['bipartite', 'palindromic', 'representative', 'stddevs'], ascending=[True, True, True, opt_dir=='min']))
         
-        if args.plot:
+        if args.plot and args.mod.lower().endswith('.rds'):
             fwd_diff, rev_diff = compute_diffs(df, seq)
             for r,row in motifs_found.loc[motifs_found.motif == motifs_found.representative].iterrows():
                 plot_diffs_with_complementary(row.motif, sa, fwd_diff, rev_diff, absolute=True, savepath=os.path.join(contig_dir, f"{row.motif}_{row.poi}.png"))
