@@ -927,58 +927,64 @@ def resolve_motif_graph(sG, d, sa, max_motif_len, mu, sigma, fwd_metric, rev_met
                 d = d.drop(root_node)
                 continue
 
-            # sort outgoing edges by the position that is over-specifying the shorter motif
-            by_index = {}
-            for edge in sG.out_edges(root_node):
-                idx, ident, diff = motif_contains(d.loc[edge[1]].motif, root_motif)
-                edge_data = sG.get_edge_data(*edge)
-                if len(diff) != 1:
-                    # at the moment, this should not be possible because each edge has edit distance 1
-                    logging.getLogger('comos').error(f"unhandled exception: motifs for {root_motif} and {d.loc[edge[1], 'motif']} differ in more than one position")
-                    exit(1)
-                if diff[0] not in by_index:
-                    by_index[diff[0]] = {"edges":[], "data":[]}
-                by_index[diff[0]]['edges'].append(edge)
-                by_index[diff[0]]['data'].append((d.loc[edge[1], 'motif'], idx))
-            
-            # for each position indipendently, determine if the shorter motif or all longer motifs shall be pruned
-            # TODO: better check all positions at once?
-            drop_root_node = False
-            for idx in by_index:
-                m_diff = motif_diff_multi(root_motif, by_index[idx]['data'])
-                if m_diff == root_motif:
-                    # prune all longer motifs
-                    pruned = prune_edges(sG, by_index[idx]['edges'], d)
-                    d = d.drop(pruned)
-                    logging.getLogger('comos').debug(f"kept root node {d.loc[root_node, 'motif']}, pruned {len(pruned)} nodes")
-                else:
-                    aggregates, Ns = aggr_fct([m_diff], len(m_diff), fwd_metric, rev_metric, sa, bases=bases)
-                    with warnings.catch_warnings():
-                        warnings.filterwarnings('ignore', r'All-NaN slice encountered')
-                        if opt_dir == "min":
-                            best = np.nanmin(aggregates[0])
-                        else:
-                            best = np.nanmax(aggregates[0])
-                    if np.isnan(best):
-                        logging.getLogger('comos').error("unhandled exception: no A or C in difference motif")
-                        exit(1)
-                    poi = np.nanargmin(aggregates[0])
-                    N = min(Ns[0][poi], len(mu)-1)
-                    stddev = (best - mu[N]) / sigma[N]
-                    if (opt_dir == "min" and stddev >= ambiguity_thr) or (opt_dir == "max" and stddev <= ambiguity_thr):
-                        # drop root motif, keep longer ones
-                        for u,v in by_index[idx]['edges']:
-                            sG.remove_edge(u,v)
-                        logging.getLogger('comos').info(f"{m_diff} : {stddev:.2f} --> drop root node {d.loc[root_node, 'motif']} for {[d.loc[v, 'motif'] for u,v in by_index[idx]['edges']]}")
-                        drop_root_node = True
-                    else:
-                        # prune all longer motifs
-                        pruned = prune_edges(sG, by_index[idx]['edges'], d)
-                        d = d.drop(pruned)
-                        logging.getLogger('comos').info(f"{m_diff} : {stddev:.2f} --> kept root node {d.loc[root_node, 'motif']}, pruned {len(pruned)} nodes")
-            if drop_root_node:
-                sG.remove_node(root_node)
-                d = d.drop(root_node)
+            ## sort outgoing edges by the position that is over-specifying the shorter motif
+            #by_index = {}
+            #for edge in sG.out_edges(root_node):
+            #    idx, ident, diff = motif_contains(d.loc[edge[1]].motif, root_motif)
+            #    edge_data = sG.get_edge_data(*edge)
+            #    if len(diff) != 1:
+            #        # at the moment, this should not be possible because each edge has edit distance 1
+            #        logging.getLogger('comos').error(f"unhandled exception: motifs for {root_motif} and {d.loc[edge[1], 'motif']} differ in more than one position")
+            #        exit(1)
+            #    if diff[0] not in by_index:
+            #        by_index[diff[0]] = {"edges":[], "data":[]}
+            #    by_index[diff[0]]['edges'].append(edge)
+            #    by_index[diff[0]]['data'].append((d.loc[edge[1], 'motif'], idx))
+            #
+            ## for each position indipendently, determine if the shorter motif or all longer motifs shall be pruned
+            ## TODO: better check all positions at once?
+            #drop_root_node = False
+            #for idx in by_index:
+            #    m_diff = motif_diff_multi(root_motif, by_index[idx]['data'])
+            #    if m_diff == root_motif:
+            #        # prune all longer motifs
+            #        pruned = prune_edges(sG, by_index[idx]['edges'], d)
+            #        d = d.drop(pruned)
+            #        logging.getLogger('comos').debug(f"kept root node {d.loc[root_node, 'motif']}, pruned {len(pruned)} nodes")
+            #    else:
+            #        aggregates, Ns = aggr_fct([m_diff], len(m_diff), fwd_metric, rev_metric, sa, bases=bases)
+            #        with warnings.catch_warnings():
+            #            warnings.filterwarnings('ignore', r'All-NaN slice encountered')
+            #            if opt_dir == "min":
+            #                best = np.nanmin(aggregates[0])
+            #            else:
+            #                best = np.nanmax(aggregates[0])
+            #        if np.isnan(best):
+            #            logging.getLogger('comos').error("unhandled exception: no A or C in difference motif")
+            #            exit(1)
+            #        poi = np.nanargmin(aggregates[0])
+            #        N = min(Ns[0][poi], len(mu)-1)
+            #        stddev = (best - mu[N]) / sigma[N]
+            #        if (opt_dir == "min" and stddev >= ambiguity_thr) or (opt_dir == "max" and stddev <= ambiguity_thr):
+            #            # drop root motif, keep longer ones
+            #            for u,v in by_index[idx]['edges']:
+            #                sG.remove_edge(u,v)
+            #            logging.getLogger('comos').info(f"{m_diff} : {stddev:.2f} --> drop root node {d.loc[root_node, 'motif']} for {[d.loc[v, 'motif'] for u,v in by_index[idx]['edges']]}")
+            #            drop_root_node = True
+            #        else:
+            #            # prune all longer motifs
+            #            pruned = prune_edges(sG, by_index[idx]['edges'], d)
+            #            d = d.drop(pruned)
+            #            logging.getLogger('comos').info(f"{m_diff} : {stddev:.2f} --> kept root node {d.loc[root_node, 'motif']}, pruned {len(pruned)} nodes")
+            #if drop_root_node:
+            #    sG.remove_node(root_node)
+            #    d = d.drop(root_node)
+
+            # always keep shorter motif, prune the longer ones
+            pruned = prune_edges(sG, [edge for edge in sG.out_edges(root_node)], d)
+            d = d.drop(pruned)
+            logging.getLogger('comos').debug(f"kept root node {d.loc[root_node, 'motif']}, pruned {len(pruned)} nodes")
+
             if draw:
                 fig,ax = plt.subplots(1,1,figsize=(6,4))
                 pos = nx.spring_layout(sG)
@@ -1120,7 +1126,8 @@ def reduce_motifs(d, sa, max_motif_len, mu, sigma, fwd_metric, rev_metric, aggr_
                 #G.add_edge(i, j, weight=1, diff=diff, idx=idx)
                 G.add_edge(i, j, weight=row.slen - d.loc[i, 'slen'])
     n_sGs = len([G.subgraph(c) for c in nx.connected_components(G.to_undirected()) if np.any(d.loc[list(c), 'pass'])])
-    G.remove_edges_from([(f, t) for f,t,d in G.edges.data() if d['weight'] > 1])
+    # remove long edges (difference more than one position)
+    #G.remove_edges_from([(f, t) for f,t,d in G.edges.data() if d['weight'] > 1])
     sGs = []
     for c in nx.connected_components(G.to_undirected()):
         sG = G.subgraph(c).copy()
