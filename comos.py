@@ -1145,15 +1145,17 @@ def test_combine_motifs(d, i, j, sa, max_motif_len, mu, sigma, fwd_metric, rev_m
             stddevs = (aggregates[m][poi] - mu[N]) / sigma[N]
             if (opt_dir == "min" and stddevs < best[4]) or (opt_dir == "max" and stddevs > best[4]):
                 if (opt_dir == "min" and stddevs <= thr) or (opt_dir == "max" and stddevs >= thr):
-                    if ambiguity_thr is not None:
-                        if not test_ambiguous(motif, sa, max_motif_len, mu, sigma, fwd_metric, rev_metric, aggr_fct, opt_dir, ambiguity_thr, min_N=ambiguity_min_sites, min_tests=ambiguity_min_tests, bases=bases):
-                            if d.loc[i].bipartite:
-                                if test_ambiguous(reverse_complement(motif), sa, max_motif_len, mu, sigma, fwd_metric, rev_metric, aggr_fct, opt_dir, ambiguity_thr, min_N=ambiguity_min_sites, min_tests=ambiguity_min_tests, bases=bases):
-                                    logging.getLogger('comos').info(f'ambiguous test failed for combined motif {motif} but not for its RC --> kept.')
-                                else:
-                                    continue
+                    # check if combined motif passes tests
+                    # check ambiguity (if the motif is too short)
+                    if not test_ambiguous(motif, sa, max_motif_len, mu, sigma, fwd_metric, rev_metric, aggr_fct, opt_dir, ambiguity_thr, min_N=ambiguity_min_sites, min_tests=ambiguity_min_tests, bases=bases):
+                        if d.loc[i].bipartite:
+                            # for bipartite motifs, it is ok if only the RC passes, since it is also always methylated
+                            if test_ambiguous(reverse_complement(motif), sa, max_motif_len, mu, sigma, fwd_metric, rev_metric, aggr_fct, opt_dir, ambiguity_thr, min_N=ambiguity_min_sites, min_tests=ambiguity_min_tests, bases=bases):
+                                logging.getLogger('comos').info(f'ambiguous test failed for combined motif {motif} but not for its RC --> kept.')
                             else:
                                 continue
+                        else:
+                            continue
                     # test if all exploded, canonical motifs of the combined motif are above the selection threshold
                     if not test_exploded(motif, sa, max_motif_len, mu, sigma, fwd_metric, rev_metric, aggr_fct, opt_dir, thr, bases=bases):
                         logging.getLogger('comos').debug(f'exploded motif test failed for combined motif {motif}')
@@ -1169,52 +1171,51 @@ def test_combine_motifs(d, i, j, sa, max_motif_len, mu, sigma, fwd_metric, rev_m
             if len(motif) <= len(d.loc[i].motif):
                 idx, ident, diff_locs = motif_contains(d.loc[i].motif, motif)
                 if idx is not None:
-                    if len(diff_locs) <= 1:
-                        #m_diff = motif_diff(d.loc[i].motif, motif, idx)
-                        #aggregates, Ns = aggr_fct([m_diff], len(m_diff), fwd_metric, rev_metric, sa, bases=bases)
-                        #if opt_dir == "min":
-                        #    best_aggregate = np.nanmin(aggregates[0])
-                        #else:
-                        #    best_aggregate = np.nanmax(aggregates[0])
-                        #if np.isnan(best_aggregate):
-                        #    # TODO: can this ever occur?
-                        #    logging.getLogger('comos').error(f"unhandled exception: found no motif aggregate for motif {m_diff}")
-                        #    breakpoint()
-                        #    exit(1)
-                        #if opt_dir == "min":
-                        #    poi = np.nanargmin(aggregates[0])
-                        #else:
-                        #    poi = np.nanargmax(aggregates[0])
-                        #N = min(Ns[0][poi], len(mu)-1)
-                        #stddev = (best_aggregate - mu[N]) / sigma[N]
-                        #if (opt_dir == "min" and stddev > thr) or (opt_dir == "max" and stddev < thr):
-                        #    # do NOT keep combined motif, but motif i
-                        #    drop_mi = False
+                    #if len(diff_locs) <= 1:
+                    m_diff = motif_diff(d.loc[i].motif, motif, idx)
+                    aggregates, Ns = aggr_fct([m_diff], len(m_diff), fwd_metric, rev_metric, sa, bases=bases)
+                    if opt_dir == "min":
+                        best_aggregate = np.nanmin(aggregates[0])
+                    else:
+                        best_aggregate = np.nanmax(aggregates[0])
+                    if np.isnan(best_aggregate):
+                        # TODO: can this ever occur?
+                        logging.getLogger('comos').warning(f"found no motif aggregate for motif {m_diff}")
+                        continue
+                    if opt_dir == "min":
+                        poi = np.nanargmin(aggregates[0])
+                    else:
+                        poi = np.nanargmax(aggregates[0])
+                    N = min(Ns[0][poi], len(mu)-1)
+                    stddev = (best_aggregate - mu[N]) / sigma[N]
+                    if (opt_dir == "min" and stddev > thr) or (opt_dir == "max" and stddev < thr):
+                        # do NOT keep combined motif, but motif i
                         drop_mi = False
+                    #drop_mi = False
             if len(motif) <= len(d.loc[j].motif):
                 idx, ident, diff_locs = motif_contains(d.loc[j].motif, motif)
                 if idx is not None:
-                    if len(diff_locs) <= 1:
-                        #m_diff = motif_diff(d.loc[j].motif, motif, idx)
-                        #aggregates, Ns = aggr_fct([m_diff], len(m_diff), fwd_metric, rev_metric, sa, bases=bases)
-                        #if opt_dir == "min":
-                        #    best_aggregate = np.nanmin(aggregates[0])
-                        #else:
-                        #    best_aggregate = np.nanmax(aggregates[0])
-                        #if np.isnan(best_aggregate):
-                        #    # TODO: can this ever occur?
-                        #    logging.getLogger('comos').error(f"unhandled exception: found no motif aggregate for motif {m_diff}")
-                        #    exit(1)
-                        #if opt_dir == "min":
-                        #    poi = np.nanargmin(aggregates[0])
-                        #else:
-                        #    poi = np.nanargmax(aggregates[0])
-                        #N = min(Ns[0][poi], len(mu)-1)
-                        #stddev = (best_aggregate - mu[N]) / sigma[N]
-                        #if (opt_dir == "min" and stddev > thr) or (opt_dir == "max" and stddev < thr):
-                        #    # do NOT keep combined motif, but motif j
-                        #    drop_mj = False
+                    #if len(diff_locs) <= 1:
+                    m_diff = motif_diff(d.loc[j].motif, motif, idx)
+                    aggregates, Ns = aggr_fct([m_diff], len(m_diff), fwd_metric, rev_metric, sa, bases=bases)
+                    if opt_dir == "min":
+                        best_aggregate = np.nanmin(aggregates[0])
+                    else:
+                        best_aggregate = np.nanmax(aggregates[0])
+                    if np.isnan(best_aggregate):
+                        # TODO: can this ever occur?
+                        logging.getLogger('comos').warning(f"unhandled exception: found no motif aggregate for motif {m_diff}")
+                        continue
+                    if opt_dir == "min":
+                        poi = np.nanargmin(aggregates[0])
+                    else:
+                        poi = np.nanargmax(aggregates[0])
+                    N = min(Ns[0][poi], len(mu)-1)
+                    stddev = (best_aggregate - mu[N]) / sigma[N]
+                    if (opt_dir == "min" and stddev > thr) or (opt_dir == "max" and stddev < thr):
+                        # do NOT keep combined motif, but motif j
                         drop_mj = False
+                    #drop_mj = False
     return best, keep_combined, drop_mi, drop_mj
 
 def reduce_motifs(d, sa, max_motif_len, mu, sigma, fwd_metric, rev_metric, aggr_fct, opt_dir, thr, ambiguity_thr, ambiguity_min_sites, ambiguity_min_tests, bases="AC"):
@@ -1428,7 +1429,6 @@ def reduce_motifs(d, sa, max_motif_len, mu, sigma, fwd_metric, rev_metric, aggr_
     
     logging.info(f"{len(d)} canonical motifs remaining after rule-based filtering:")
     print(d)
-
     
     G = nx.DiGraph()
     G.add_nodes_from(list(d.index))
@@ -1767,7 +1767,10 @@ def main(args):
     if args.metagenome:
         for contig_id in sufficient_length:
             seq = contigs[contig_id]
-            sa = suffix_array.get_suffix_array(contig_id, seq, cache_dir=args.cache)
+            index_fp = ""
+            if args.cache:
+                index_fp = os.path.join(args.cache, f"{os.path.abspath(args.fasta).replace('/', '_')}-{contig_id}.idx")
+            sa = suffix_array.get_suffix_array(contig_id, seq, index_fp=index_fp)
             df = df_all.loc[df_all.contig == contig_id]
             if args.metric == "expsumlogp":
                 fwd_metric, rev_metric = compute_expsumlogp(df, seq, args.min_cov, args.window, args.min_window_values, args.subtract_background)
@@ -1782,16 +1785,16 @@ def main(args):
             print()
 
             logging.getLogger('comos').info(f"Analyzing contig {contig_id} of length {len(contigs[contig_id]):,}")
-            seq = contigs[contig_id]
-            sa = suffix_array.get_suffix_array(contig_id, seq, cache_dir=args.cache)
-
             find_methylated_motifs(all_canon_motifs, fwd_metric, rev_metric, sa, res_dir, contig_id, args)
     else:
         fwd_metrics, rev_metrics = [], []
         SAs = []
         for contig_id in sufficient_length:
             seq = contigs[contig_id]
-            sa = suffix_array.get_suffix_array(contig_id, seq, cache_dir=args.cache)
+            index_fp = ""
+            if args.cache:
+                index_fp = os.path.join(args.cache, f"{os.path.abspath(args.fasta).replace('/', '_')}-{contig_id}.idx")
+            sa = suffix_array.get_suffix_array(contig_id, seq, index_fp=index_fp)
             SAs.append(sa)
             df = df_all.loc[df_all.contig == contig_id]
             if args.metric == "expsumlogp":
@@ -1817,6 +1820,6 @@ if __name__ == '__main__':
     args = parse_args()
     level = logging.DEBUG if args.debug else logging.INFO
     logging.basicConfig(level=level, 
-                        format=f'%(levelname)s [%(asctime)s] : %(message)s',
+                        format=f'%(levelname)7s [%(asctime)s] : %(message)s',
                         datefmt='%H:%M:%S')
     main(args)
