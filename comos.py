@@ -6,6 +6,7 @@ import itertools
 import pickle
 import time
 import re
+from io import StringIO
 
 import pandas as pd
 import numpy as np
@@ -109,7 +110,10 @@ def parse_args():
     io_grp.add_argument(
         '--mod', 
         required=True,
-        help='File containing modification information, either RDS Rdata file (.RDS) created with Nanodisco or bedMethyl file (.bed) from modkit.')
+        help='''File containing modification information, 
+        either an RDS Rdata file (.RDS) created with Nanodisco, 
+        a bedMethyl file (.bed) from modkit or 
+        the common prefix of tombo text-output files.''')
     io_grp.add_argument(
         '--out', '-o', 
         default='./comos_output',
@@ -165,7 +169,7 @@ def parse_args():
     )
     hyper_grp.add_argument(
         '--metric',
-        choices=["meanabsdiff", "expsumlogp", "meanmaxfrac"],
+        choices=["meanabsdiff", "expsumlogp", "meanfrac"],
         default="meanabsdiff",
         help="Which metric to compute for each motif site."
     )
@@ -249,8 +253,17 @@ def parse_args():
         logging.getLogger('comos').error(f"Input file {args.fasta} does not exist.")
         exit(1)
     if not os.path.exists(args.mod):
-        logging.getLogger('comos').error(f"Input file {args.mod} does not exist.")
-        exit(1)
+        if not os.path.exists(os.path.dirname(args.mod)):
+            logging.getLogger('comos').error(f"Input file {args.mod} does not exist.")
+            exit(1)
+        else:
+            missing = []
+            for suffix in ['.valid_coverage.plus.wig', '.valid_coverage.minus.wig', '.dampened_fraction_modified_reads.plus.wig', '.dampened_fraction_modified_reads.minus.wig']:
+                candidate_fns = [fn for fn in os.listdir(os.path.dirname(args.mod)) if fn.startswith(os.path.basename(args.mod)) and fn.endswith(suffix)]
+                if len(candidate_fns) != 1:
+                    missing.append(suffix)
+            if missing:
+                logging.getLogger('comos').error(f"Detected tombo input. Missing text-output files with suffices {missing} for prefix {args.mod}.")
     if not os.path.exists(args.out):
         os.makedirs(args.out)
     if args.cache and not os.path.exists(args.cache):
@@ -285,6 +298,40 @@ def parse_bed_file(fp):
     df['dir'] = None
     df.loc[df.strand == '+', 'dir'] = 'fwd'
     df.loc[df.strand == '-', 'dir'] = 'rev'
+    return df
+
+def parse_tombo_files(prefix):
+    def parse_wig_file(fn, col_name, strand):
+        dfs = []
+        with open(fn, 'r') as fh:
+            fcontent = fh.read().split("variableStep chrom=")[1:]
+        for i in range(len(fcontent)):
+            d = pd.read_csv(StringIO(fcontent[i]), sep=" ")
+            contig = d.columns[0]
+            d['contig'] = contig
+            d['dir'] = strand
+            d = d.rename(columns={"span=1":col_name, contig:"position"}).sort_values('position').set_index(['contig', 'dir', 'position'], )
+            dfs.append(d)
+        return pd.concat(dfs)
+
+    dirname = os.path.dirname(prefix)
+    cov_fwd_fn = [os.path.join(dirname, fn) for fn in os.listdir(dirname) if fn.startswith(os.path.basename(prefix)) and fn.endswith('.valid_coverage.plus.wig')][0]
+    cov_rev_fn = [os.path.join(dirname, fn) for fn in os.listdir(dirname) if fn.startswith(os.path.basename(prefix)) and fn.endswith('.valid_coverage.minus.wig')][0]
+    frac_fwd_fn = [os.path.join(dirname, fn) for fn in os.listdir(dirname) if fn.startswith(os.path.basename(prefix)) and fn.endswith('.dampened_fraction_modified_reads.plus.wig')][0]
+    frac_rev_fn = [os.path.join(dirname, fn) for fn in os.listdir(dirname) if fn.startswith(os.path.basename(prefix)) and fn.endswith('.dampened_fraction_modified_reads.minus.wig')][0]
+    
+    
+    dfs = []
+    dfs.append(parse_wig_file(cov_fwd_fn, "cov", "fwd"))
+    dfs.append(parse_wig_file(cov_rev_fn, "cov", "rev"))
+    dfs.append(parse_wig_file(frac_fwd_fn, "fracmod", "fwd"))
+    dfs.append(parse_wig_file(frac_rev_fn, "fracmod", "rev"))
+
+    df = pd.concat(dfs, axis='columns')
+    df['cov'] = df['cov'].min(axis=1)
+    df['fracmod'] = df['fracmod'].min(axis=1)
+    df = df.loc(axis=1)[df.columns.duplicated()]
+    df = df.reset_index()[['contig', 'position', 'dir', 'cov', 'fracmod']]
     return df
 
 def parse_largest_contig(fp, cache_dir='tmp'):
@@ -354,7 +401,7 @@ def compute_meanabsdiff(df, seq, min_cov, window, min_window_values, subtract_ba
         return fwd_mean_abs_diff - fwd_background, rev_mean_abs_diff - rev_background
     return fwd_mean_abs_diff, rev_mean_abs_diff
 
-def compute_meanmaxfrac(df, seq, min_cov, window, min_window_values, subtract_background=False):
+def compute_meanfrac(df, seq, min_cov, window, min_window_values, subtract_background=False):
     df = df.reset_index().sort_values("fracmod", ascending=False).groupby(['position', 'dir'], as_index=False).first().set_index('position')
     fwd_frac = np.full(len(seq), np.nan)
     sel = (df.dir == 'fwd') & ~pd.isna(df.fracmod) & \
@@ -364,8 +411,8 @@ def compute_meanmaxfrac(df, seq, min_cov, window, min_window_values, subtract_ba
     sel = (df.dir == 'rev') & ~pd.isna(df.fracmod) & \
           (df['cov'] >= min_cov)
     rev_frac[df.loc[sel].index] = df.loc[sel, 'fracmod']
-    fwd_mean_max_frac = pd.Series(np.abs(fwd_frac)).rolling(window, center=True, min_periods=min_window_values).mean()
-    rev_mean_max_frac = pd.Series(np.abs(rev_frac)).rolling(window, center=True, min_periods=min_window_values).mean()
+    fwd_mean_max_frac = pd.Series(fwd_frac).rolling(window, center=True, min_periods=min_window_values).mean()
+    rev_mean_max_frac = pd.Series(rev_frac).rolling(window, center=True, min_periods=min_window_values).mean()
     if subtract_background:
         dist = round(window / 2 + 0.5)
         with warnings.catch_warnings():
@@ -1688,7 +1735,7 @@ def find_methylated_motifs(all_canon_motifs, fwd_metric, rev_metric, sa, res_dir
         opt_dir = "min"
         selection_thr = -args.selection_thr
         ambiguity_thr = -args.ambiguity_thr
-    elif args.metric in ["meanabsdiff", "meanmaxfrac"]:
+    elif args.metric in ["meanabsdiff", "meanfrac"]:
         opt_dir = "max"
         selection_thr = args.selection_thr
         ambiguity_thr = args.ambiguity_thr
@@ -1787,6 +1834,7 @@ def find_methylated_motifs(all_canon_motifs, fwd_metric, rev_metric, sa, res_dir
     else:
         sel = (results.stddevs >= selection_thr)
     logging.getLogger('comos').info(f"Selected {sel.sum():,} motifs based on selection threshold of {selection_thr} std. deviations.")
+    print(results.sort_values('stddevs', ascending=(opt_dir == "min")))
     if sel.sum() == 0:
         logging.getLogger('comos').warning("No motifs found given the current set of parameters.")
         return
@@ -1841,6 +1889,8 @@ def main(args):
             df_all = parse_rds_file(args.mod)
         elif args.mod.lower().endswith('.bed'):
             df_all = parse_bed_file(args.mod)
+        else:
+            df_all = parse_tombo_files(args.mod)
         tstop = time.time()
         logging.getLogger('comos').info(f"Parsed mod file in {tstop - tstart:.2f} seconds")
         if args.cache:
@@ -1864,8 +1914,8 @@ def main(args):
                 fwd_metric, rev_metric = compute_expsumlogp(df, seq, args.min_cov, args.window, args.min_window_values, args.subtract_background)
             elif args.metric == "meanabsdiff":
                 fwd_metric, rev_metric = compute_meanabsdiff(df, seq, args.min_cov, args.window, args.min_window_values, args.subtract_background)
-            elif args.metric == "meanmaxfrac":
-                fwd_metric, rev_metric = compute_meanmaxfrac(df, seq, args.min_cov, args.window, args.min_window_values, args.subtract_background)
+            elif args.metric == "meanfrac":
+                fwd_metric, rev_metric = compute_meanfrac(df, seq, args.min_cov, args.window, args.min_window_values, args.subtract_background)
             
             res_dir = os.path.join(args.out, contig_id)
             if not os.path.exists(res_dir):
@@ -1889,8 +1939,8 @@ def main(args):
                 fwd_metric, rev_metric = compute_expsumlogp(df, seq, args.min_cov, args.window, args.min_window_values, args.subtract_background)
             elif args.metric == "meanabsdiff":
                 fwd_metric, rev_metric = compute_meanabsdiff(df, seq, args.min_cov, args.window, args.min_window_values, args.subtract_background)
-            elif args.metric == "meanmaxfrac":
-                fwd_metric, rev_metric = compute_meanmaxfrac(df, seq, args.min_cov, args.window, args.min_window_values, args.subtract_background)
+            elif args.metric == "meanfrac":
+                fwd_metric, rev_metric = compute_meanfrac(df, seq, args.min_cov, args.window, args.min_window_values, args.subtract_background)
             fwd_metrics.append(fwd_metric)
             rev_metrics.append(rev_metric)
         
