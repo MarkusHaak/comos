@@ -216,6 +216,12 @@ def parse_args():
         default=2,
         help="Minimum number of test cases per ambiguous position (1-4) with sufficient sites, otherwise test fails."
     )
+    hyper_grp.add_argument(
+        '--outlier-iqr',
+        type=float,
+        default=0.0,
+        help="Datapoints outside median +- <outlier-iqr> * IQR are considered outliers when calculating background model. Disable outlier detection with value <= 0.0."
+    )
 
     misc_grp = parser.add_argument_group('Misc')
     misc_grp.add_argument(
@@ -588,20 +594,34 @@ def func(x, a, b):
     #return (1 / (1 + np.exp(-d*(x + f)))) * (a * np.exp(-b * x) + c) + (1 - 1 / (1 + np.exp(-d*(x + f)))) * (g * np.exp(-h * x) + i)
 
 
-def normal_approx(d):
+def normal_approx(d, outlier_iqr=0.):
     mu = []
     sigma = []
+    med = []
+    iqrs = []
     window = lambda x : 20 + x
     #N = np.unique(np.linspace(1,d.N.max(),1000).astype(int))
     N = np.unique(np.concatenate([np.geomspace(1,d.N.max(),min(d.N.max()-1,500)).astype(int), 
                                   np.linspace(1,d.N.max(),min(d.N.max()-1,1000)).astype(int)]))
     for n in N:
         sel = (d.N >= n - window(n)//2) & (d.N <= n + window(n)//2)
-        sigma.append(d.loc[sel, 'val'].std())
-        mu.append(d.loc[sel, 'val'].mean())
+        X = d.loc[sel, 'val']
+        q75, q25 = np.percentile(X, [75 ,25])
+        iqr = q75 - q25
+        if outlier_iqr > 0.:
+            median = np.median(X)
+            outlier = (X < median - outlier_iqr*iqr) | (X > median + outlier_iqr*iqr)
+            #print(n, median, iqr, np.sum(outlier))
+            #breakpoint()
+            X = X[~outlier]
+        sigma.append(X.std())
+        mu.append(X.mean())
+        med.append(X.median())
+        iqrs.append(iqr)
     
     # piecewise linear interpolation
-    return np.interp(np.array(range(0,d.N.max()+1)), N, mu), np.interp(np.array(range(0,d.N.max()+1)), N, sigma)
+    Ns = np.array(range(0,d.N.max()+1))
+    return np.interp(Ns, N, mu), np.interp(Ns, N, sigma), np.interp(Ns, N, med), np.interp(Ns, N, iqrs)
 
     #fig,(ax1,ax2) = plt.subplots(2,1)
     #try:
@@ -628,17 +648,19 @@ def normal_approx(d):
     p_sigma = lambda x : func(x, *popt2)
     return p_mu(np.array(range(0,d.N.max()+1))), p_sigma(np.array(range(0,d.N.max()+1)))
 
-def plot_motif_scores(results, mu, sigma, thr=6., savepath=None):
+def plot_motif_scores(results, mu, sigma, med, iqr, thr=6., outlier_iqr=0., savepath=None):
     fig,ax = plt.subplots(figsize=(6,6))
     ax.scatter(results.N,results.val,s=1,alpha=0.25, color='black')
     X = np.unique(np.linspace(0,mu.shape[0]-1, min(mu.shape[0]-1, 1000)).astype(int))
     ax.plot(X, mu[X], color='C0')
     ax.plot(X, mu[X] + thr*sigma[X], color='C0', linestyle=':')
+    if outlier_iqr > 0.:
+        ax.plot(X, med[X] + outlier_iqr*iqr[X], color='C1', linestyle=':')
     #ax.plot(X, mu[X.astype(int)] - thr*sigma[X.astype(int)], color='C0', linestyle=':')
     ax.grid()
     ax.set(ylim=(-0.0005, ax.get_ylim()[1]),
            xlim=(-50,5000),
-        xlabel="# motif sites", ylabel="10**(sumlog p)")
+        xlabel="# motif sites", ylabel="aggregated motif metric")
     if savepath:
         plt.savefig(savepath, dpi=300)
     else:
@@ -798,7 +820,7 @@ def test_ambiguous(motif, sa, max_motif_len, mu, sigma, fwd_metric, rev_metric, 
     # instead of taking min over all array (best),
     # take max over columns (repr. poi) and min over those
     Ns = np.clip(Ns, 1, len(mu)-1)
-    stddevs = (aggregates - mu[Ns]) / sigma[Ns]
+    stddevs = (aggregates - mu[Ns]) / sigma[Ns] # frequently throws RuntimeWarnings "invalid value encountered in scalar divide" and "divide by zero encountered in divide"
     stddevs[Ns < min_N] = np.nan # mask sites with low coverage
     if debug:
         pois_idx = np.where(pois)[0]
@@ -859,7 +881,7 @@ def test_exploded(motif, sa, max_motif_len, mu, sigma, fwd_metric, rev_metric, a
     # instead of taking min over all array (best),
     # take max over columns (repr. poi) and min over those
     Ns = np.clip(Ns, 1, len(mu)-1)
-    stddevs = (aggregates - mu[Ns]) / sigma[Ns]
+    stddevs = (aggregates - mu[Ns]) / sigma[Ns] # frequently throws RuntimeWarnings "invalid value encountered in scalar divide" and "divide by zero encountered in divide"
     stddevs[Ns < min_N] = np.nan # mask sites with low coverage
     if opt_dir == "min":
         max_stddev_per_poi = np.nanmax(stddevs[~no_sites][:, pois], axis=0)
@@ -1100,6 +1122,11 @@ def resolve_combined_motif_graph(sG, d, sa, max_motif_len, mu, sigma, fwd_metric
                 d = d.drop(root_node)
                 break
         else:
+            # update reverse complements
+            for i in d.index:
+                if d.loc[i, 'rc'] is not None:
+                    if d.loc[i, 'rc'] not in d.index:
+                        d.loc[i, 'rc'] = None
             for n in d.loc[d.index.isin(root_nodes) & (d.rc == d.index)].index:
                 # prioritize palindromic motifs
                 # prune graph for nodes that were combined to this one
@@ -1109,11 +1136,15 @@ def resolve_combined_motif_graph(sG, d, sa, max_motif_len, mu, sigma, fwd_metric
                     logging.getLogger('comos').info(f"kept palindromic root node {d.loc[n, 'motif']} and consequently pruned {len(pruned)} other nodes")
                     break
             else:
+                indices = d.index.copy() # to check if any nodes where pruned
                 for n in d.loc[d.index.isin(root_nodes) & ~pd.isna(d.rc) & (d.rc != d.index)].index:
                     # prioritize motifs with RC over those without
                     # keep RC (which is not necessarily a root node) and handle all motifs that it was combined to
                     rc = d.loc[n, 'rc']
-                    comb_nodes = [u for u,_ in sG.in_edges(rc)]
+                    try:
+                        comb_nodes = [u for u,_ in sG.in_edges(rc)]
+                    except:
+                        breakpoint()
                     for u in comb_nodes:
                         sG.remove_edge(u,rc)
                     for u in comb_nodes:
@@ -1128,8 +1159,8 @@ def resolve_combined_motif_graph(sG, d, sa, max_motif_len, mu, sigma, fwd_metric
                     if list(sG.out_edges(rc)):
                         pruned_rc = prune_edges(sG, list(sG.out_edges(rc)), d)
                         d = d.drop(pruned_rc)
-                    if pruned or pruned_rc:
-                        logging.getLogger('comos').info(f"kept root node {d.loc[n, 'motif']} (and its RC {d.loc[rc, 'motif']}) and consequently pruned {len(pruned) + len(pruned_rc)} other nodes")
+                    if len(indices) != len(d.index):
+                        logging.getLogger('comos').info(f"kept root node {d.loc[n, 'motif']} (and its RC {d.loc[rc, 'motif']}) and consequently pruned {len(indices) - len(d.index)} other nodes")
                         break
                 else:
                     for n in d.loc[d.index.isin(root_nodes) & pd.isna(d.rc)].index:
@@ -1137,7 +1168,7 @@ def resolve_combined_motif_graph(sG, d, sa, max_motif_len, mu, sigma, fwd_metric
                         if list(sG.out_edges(n)):
                             pruned = prune_edges(sG, list(sG.out_edges(n)), d)
                             d = d.drop(pruned)
-                            logging.getLogger('comos').info(f"kept root node {d.loc[n, 'motif']} and consequently pruned {len(pruned) + len(pruned_rc)} other nodes")
+                            logging.getLogger('comos').info(f"kept root node {d.loc[n, 'motif']} and consequently pruned {len(pruned)} other nodes")
                             break
         if len(sG.edges) == 0 and ~np.any(d.to_prune):
             break
@@ -1146,19 +1177,21 @@ def resolve_combined_motif_graph(sG, d, sa, max_motif_len, mu, sigma, fwd_metric
     return d
 
 
-def test_combine_motifs(d, i, j, sa, max_motif_len, mu, sigma, fwd_metric, rev_metric, aggr_fct, opt_dir, thr, ambiguity_thr, ambiguity_min_sites, ambiguity_min_tests, bases="AC"):
-    combined_motifs = combine_motifs(d.loc[i].motif, d.loc[j].motif)
+def test_combine_motifs(d, i, j, sa, max_motif_len, mu, sigma, fwd_metric, rev_metric, aggr_fct, opt_dir, thr, ambiguity_thr, ambiguity_min_sites, ambiguity_min_tests, min_k, bases="AC"):
+    combined_motifs = [m for m in combine_motifs(d.loc[i].motif, d.loc[j].motif) if len(m) > min_k]
     if opt_dir == "min":
         best = [None, None, np.inf, 0, np.inf, np.inf, d.loc[i].bipartite]
     else:
         best = [None, None, -np.inf, 0, -np.inf, np.inf, d.loc[i].bipartite]
     keep_combined, drop_mi, drop_mj = False, True, True
+    if len(combined_motifs) == 0:
+        return best, keep_combined, drop_mi, drop_mj
     aggregates, Ns = aggr_fct(combined_motifs, max_motif_len, fwd_metric, rev_metric, sa, bases=bases)
     #calculate number of std. deviations
     for (m,motif) in enumerate(combined_motifs):
         for poi in get_pois(motif):
             N = min(Ns[m][poi], len(mu)-1)
-            stddevs = (aggregates[m][poi] - mu[N]) / sigma[N]
+            stddevs = (aggregates[m][poi] - mu[N]) / sigma[N] # frequently throws RuntimeWarnings "invalid value encountered in scalar divide" and "divide by zero encountered in divide"
             if (opt_dir == "min" and stddevs < best[4]) or (opt_dir == "max" and stddevs > best[4]):
                 if (opt_dir == "min" and stddevs <= thr) or (opt_dir == "max" and stddevs >= thr):
                     # check if combined motif passes tests
@@ -1240,7 +1273,7 @@ def test_combine_motifs(d, i, j, sa, max_motif_len, mu, sigma, fwd_metric, rev_m
                     #    #drop_mj = False
     return best, keep_combined, drop_mi, drop_mj
 
-def reduce_motifs(d, sa, max_motif_len, mu, sigma, fwd_metric, rev_metric, aggr_fct, opt_dir, thr, ambiguity_thr, ambiguity_min_sites, ambiguity_min_tests, bases="AC"):
+def reduce_motifs(d, sa, max_motif_len, mu, sigma, fwd_metric, rev_metric, aggr_fct, opt_dir, thr, ambiguity_thr, ambiguity_min_sites, ambiguity_min_tests, min_k, bases="AC"):
     d = d.copy().sort_values(['N','stddevs'], ascending=[False,True])
     d['bipartite'] = d.motif.str.contains('NN')
     # initial filtering
@@ -1250,7 +1283,7 @@ def reduce_motifs(d, sa, max_motif_len, mu, sigma, fwd_metric, rev_metric, aggr_
             logging.getLogger('comos').debug(f"excluded {row.motif}:{row.poi} ({row.N}, {row.stddevs:.2f}) : did not pass ambiguity filter")
         n_excluded = (d['pass'] == False).sum()
         if n_excluded:
-            logging.info(f"Excluded {n_excluded} motifs because they did not pass ambiguity testing.")
+            logging.info(f"Excluded {n_excluded:,} motifs because they did not pass ambiguity testing.")
         #d = d.loc[d['pass']].drop(['pass'], axis=1)
     logging.getLogger('comos').info(f"{len(d.loc[d['pass']])} motifs after ambiguity testing")
     print(d.loc[d['pass']].sort_values("stddevs", ascending=(opt_dir=="min")))
@@ -1391,6 +1424,7 @@ def reduce_motifs(d, sa, max_motif_len, mu, sigma, fwd_metric, rev_metric, aggr_
                 if reverse_complement(d.loc[j, 'motif']) == d.loc[i, 'motif']:
                     d.loc[i, 'rc'] = j
         for i in d.loc[d.bipartite & pd.isna(d.rc)].index:
+            print(i)
             for j in d.loc[d.bipartite].index:
                 idx, ident, diff = motif_contains(reverse_complement(d.loc[i].motif), d.loc[j].motif, bipartite=True)
                 if idx is not None and len(diff) == 1:
@@ -1449,7 +1483,7 @@ def reduce_motifs(d, sa, max_motif_len, mu, sigma, fwd_metric, rev_metric, aggr_
             else:
                 # check again if RC is sufficiently methylated (but was later filtered in resolving the nested graph)
                 # no need to check for ambiguity, since for bipartite motifs it suffices if one of two RCs passes
-                motif = reverse_complement(d.loc[j].motif)
+                motif = reverse_complement(d.loc[i].motif)
                 aggregates, Ns = aggr_fct([motif], len(motif), fwd_metric, rev_metric, sa, bases=bases)
                 if opt_dir == "min":
                     best_aggregate = np.nanmin(aggregates[0])
@@ -1470,7 +1504,8 @@ def reduce_motifs(d, sa, max_motif_len, mu, sigma, fwd_metric, rev_metric, aggr_
                     new = pd.Series([motif, poi, aggregates[0][poi], Ns[0][poi], stddev, norm().cdf(stddev), True, i], index=d.columns)
                     if ~d.motif.eq(new.motif).any():
                         d.loc[d.index.max()+1] = new
-                    changed = True
+                        changed = True
+                        break
             if changed:
                 break
     # remove bipartite motifs with missing reverse complement
@@ -1503,7 +1538,7 @@ def reduce_motifs(d, sa, max_motif_len, mu, sigma, fwd_metric, rev_metric, aggr_
                     continue
                 tested.add((d.loc[i].motif, d.loc[j].motif))
 
-                best, keep_combined, drop_mi, drop_mj = test_combine_motifs(d, i, j, sa, max_motif_len, mu, sigma, fwd_metric, rev_metric, aggr_fct, opt_dir, thr, ambiguity_thr, ambiguity_min_sites, ambiguity_min_tests, bases=bases)
+                best, keep_combined, drop_mi, drop_mj = test_combine_motifs(d, i, j, sa, max_motif_len, mu, sigma, fwd_metric, rev_metric, aggr_fct, opt_dir, thr, ambiguity_thr, ambiguity_min_sites, ambiguity_min_tests, min_k, bases=bases)
                 if keep_combined:
                     new = pd.Series(best+[None], index=d.columns)
                     if ~d.motif.eq(new.motif).any():
@@ -1695,7 +1730,7 @@ def find_methylated_motifs(all_canon_motifs, fwd_metric, rev_metric, sa, res_dir
     results = results[['poi', 'val', 'N']] # change order of columns to match that in function reduce_motifs
 
     tstart = time.time()
-    mu, sigma = normal_approx(results)
+    mu, sigma, med, iqr = normal_approx(results, outlier_iqr=args.outlier_iqr)
     tstop = time.time()
     logging.getLogger('comos').info(f"Performed normal approximation in {tstop - tstart:.2f} seconds")
     results['stddevs'] = (results.val - mu[results.N]) / sigma[results.N]
@@ -1745,7 +1780,7 @@ def find_methylated_motifs(all_canon_motifs, fwd_metric, rev_metric, sa, res_dir
         print(res)
         return#exit()
     if args.plot:
-        plot_motif_scores(results, mu, sigma, thr=selection_thr, savepath=os.path.join(res_dir, f"scores_scatterplot.png"))
+        plot_motif_scores(results, mu, sigma, med, iqr, thr=selection_thr, outlier_iqr=args.outlier_iqr, savepath=os.path.join(res_dir, f"scores_scatterplot.png"))
     
     if opt_dir == "min":
         sel = (results.stddevs <= selection_thr)
@@ -1767,6 +1802,7 @@ def find_methylated_motifs(all_canon_motifs, fwd_metric, rev_metric, sa, res_dir
         ambiguity_thr=ambiguity_thr,
         ambiguity_min_sites=args.ambiguity_min_sites,
         ambiguity_min_tests=args.ambiguity_min_tests,
+        min_k=args.min_k,
         bases=args.bases)
     tstop = time.time()
     logging.getLogger('comos').info(f"Performed motif reduction in {tstop - tstart:.2f} seconds")
@@ -1872,6 +1908,6 @@ if __name__ == '__main__':
     args = parse_args()
     level = logging.DEBUG if args.debug else logging.INFO
     logging.basicConfig(level=level, 
-                        format=f'%(levelname)7s [%(asctime)s] : %(message)s',
+                        format=f'%(levelname)-7s [%(asctime)s] : %(message)s',
                         datefmt='%H:%M:%S')
     main(args)
