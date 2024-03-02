@@ -19,6 +19,11 @@ from scipy.stats import norm
 from tqdm import tqdm
 import networkx as nx
 
+import matplotlib as mpl
+from matplotlib.text import TextPath
+from matplotlib.patches import PathPatch
+from matplotlib.font_manager import FontProperties
+
 import suffix_array
 
 matplotlib.use('TkAgg')
@@ -203,6 +208,12 @@ def parse_args():
         help='Minimum diversion from Null-model in number of std.dev. required for a motif to get selected.' 
     )
     hyper_grp.add_argument(
+        '--ambiguity-type',
+        choices=['metric', 'logo'],
+        default="logo",
+        help='Which type of ambiguity test should be performed.'
+    )
+    hyper_grp.add_argument(
         '--ambiguity-thr',
         type=float,
         default=3.0,
@@ -218,6 +229,12 @@ def parse_args():
         '--ambiguity-min-tests',
         type=int,
         default=2,
+        help="Minimum number of test cases per ambiguous position (1-4) with sufficient sites, otherwise test fails."
+    )
+    hyper_grp.add_argument(
+        '--replace-min-enrichment',
+        type=int,
+        default=-0.1,
         help="Minimum number of test cases per ambiguous position (1-4) with sufficient sites, otherwise test fails."
     )
     hyper_grp.add_argument(
@@ -263,7 +280,7 @@ def parse_args():
                 if len(candidate_fns) != 1:
                     missing.append(suffix)
             if missing:
-                logging.getLogger('comos').error(f"Detected tombo input. Missing text-output files with suffices {missing} for prefix {args.mod}.")
+                logging.getLogger('comos').error(f"Detected tombo input. Missing text-output files with suffixes {missing} for prefix {args.mod}.")
     if not os.path.exists(args.out):
         os.makedirs(args.out)
     if args.cache and not os.path.exists(args.cache):
@@ -833,13 +850,15 @@ def combine_motifs(m1, m2):
             combined_motifs.append(combined)
     return combined_motifs
 
-def test_ambiguous(motif, sa, max_motif_len, mu, sigma, fwd_metric, rev_metric, aggr_fct, opt_dir, ambiguity_thr, min_N=30, debug=False, min_tests=2, bases="AC", rec=False):
+def test_ambiguous_metric(motif, poi, sa, max_motif_len, mu, sigma, fwd_metric, rev_metric, aggr_fct, opt_dir, ambiguity_thr, min_N=30, debug=False, min_tests=2, bases="AC", rec=False):
     biparite = False
     if "NNN" in motif: # bipartite
         biparite = True
         # only check flanking Ns
         callback = lambda pat: pat.group(1)+pat.group(2).lower()+pat.group(3)
         motif = re.sub(r"(N)(N+)(N)", callback, motif)
+    else:
+        motif = motif.replace('N', 'n')
     motif_exp = ["N"] + list(motif) + ["N"]
     to_test = []
     num_amb = 0
@@ -862,7 +881,7 @@ def test_ambiguous(motif, sa, max_motif_len, mu, sigma, fwd_metric, rev_metric, 
         # no single C/A site with sufficient coverage
         if biparite and not rec:
             # for bipartite motifs, its OK if only RC passes (RC always mathylated too, 2x amount of tests anyways)
-            return test_ambiguous(reverse_complement(motif), sa, max_motif_len, mu, sigma, fwd_metric, rev_metric, aggr_fct, opt_dir, ambiguity_thr, min_N=min_N, debug=debug, min_tests=min_tests, bases=bases, rec=True)
+            return test_ambiguous_metric(reverse_complement(motif), len(motif) - poi - 1, sa, max_motif_len, mu, sigma, fwd_metric, rev_metric, aggr_fct, opt_dir, ambiguity_thr, min_N=min_N, debug=debug, min_tests=min_tests, bases=bases, rec=True)
         return False
     # instead of taking min over all array (best),
     # take max over columns (repr. poi) and min over those
@@ -884,11 +903,11 @@ def test_ambiguous(motif, sa, max_motif_len, mu, sigma, fwd_metric, rev_metric, 
     #if np.sum(~np.isnan(stddevs[~no_sites][:, pois]), axis=0).min() < min_tests:
     #    # not enough test cases with sufficient coverage
     #    return False
-    if np.any((~np.isnan(stddevs[:, pois])).reshape(4,stddevs.shape[0] // 4,-1).sum(axis=1).min(axis=1) < min_tests):
-        # not enough test cases with sufficient coverage for at least one ambiguous position
+    if np.any((~np.isnan(stddevs[:, pois])).reshape(stddevs.shape[0] // 4, 4,-1).sum(axis=1).min(axis=1) < min_tests):
+        # at least one ambiguous position has not enough test cases with sufficient coverage
         if biparite and not rec:
             # for bipartite motifs, its OK if only RC passes (RC always mathylated too, 2x amount of tests anyways)
-            return test_ambiguous(reverse_complement(motif), sa, max_motif_len, mu, sigma, fwd_metric, rev_metric, aggr_fct, opt_dir, ambiguity_thr, min_N=min_N, debug=debug, min_tests=min_tests, bases=bases, rec=True)
+            return test_ambiguous_metric(reverse_complement(motif), len(motif) - poi - 1, sa, max_motif_len, mu, sigma, fwd_metric, rev_metric, aggr_fct, opt_dir, ambiguity_thr, min_N=min_N, debug=debug, min_tests=min_tests, bases=bases, rec=True)
         return False
     #max_stddev_per_poi = np.nanquantile(stddevs[~no_sites][:, pois], ambiguity_quantile, axis=0) # nanquantile alone not sufficient because we want to exclude columns e.g. with single entries
     if opt_dir == 'min':
@@ -904,6 +923,234 @@ def test_ambiguous(motif, sa, max_motif_len, mu, sigma, fwd_metric, rev_metric, 
     else:
         return max_stddev_per_poi[best_poi] > ambiguity_thr
 
+def get_EDLogo_enrichment_scores(motif, poi, ind, sa, mu, sigma, fwd_metric, rev_metric, opt_dir, min_N=10, stddev=3.0, n_pseudo=5, Nnull=500):
+    if ind < 0:
+        motif_exp = ["N"] * (-ind) + list(motif)
+        poi_ = int(poi) - ind
+        ind_ = 0
+    elif ind >= len(motif):
+        motif_exp = list(motif) + ["N"] * (len(motif) - ind + 1)
+        poi_ = int(poi)
+        ind_ = ind
+    else:
+        motif_exp = list(motif)
+        poi_ = int(poi)
+        ind_ = ind
+    test_cases = []
+    for b in IUPAC_TO_LIST['N']:
+        testcase = "".join(motif_exp[:ind_] + [b] + motif_exp[ind_+1:])
+        testcase = testcase.strip('N').upper()
+        test_values = []
+        for sa_, fwd_metric_, rev_metric_ in zip(sa, fwd_metric, rev_metric):
+            ind_fwd, ind_rev = suffix_array.find_motif(testcase, sa_, poi=poi_)
+            test_values.append(fwd_metric_[ind_fwd])
+            test_values.append(rev_metric_[ind_rev])
+        test_values = np.concatenate(test_values)
+        Ntot = test_values.shape[0]
+        test_values = test_values[~np.isnan(test_values)]
+        Nval = test_values.shape[0]
+        #N = np.clip(Nval, 1, len(mu)-1)
+        #mu_, sigma_ = mu[N], sigma[N]
+        mu_, sigma_ = mu[Nnull], sigma[Nnull]
+        if opt_dir == 'min':
+            can = (test_values >= mu_ - stddev * sigma_).sum()
+        else:
+            can = (test_values <= mu_ + stddev * sigma_).sum()
+        mod = Nval - can
+        test_cases.append((ind, b, Ntot, Nval, can, mod))
+    df = pd.DataFrame(test_cases, columns=['mindex','base','Ntot','Nval','can','mod'])
+    # filter bases with insufficient coverage
+    if min_N:
+        df = df.loc[df.Nval >= min_N]
+        #df = df.loc[df['mod'] >= min_N]
+    # stabilizing estimates
+    # by adding pseudocounts
+    df['q'] = df['Nval'] / df['Nval'].sum()
+    df['modpseudo'] = df['mod']
+    df['modpseudo'] += df['q'] * df.shape[0] * n_pseudo
+
+    #df['p'] = df['mod'] / df['mod'].sum()
+    df['p'] = df['modpseudo'] / df['modpseudo'].sum()
+    df['r~'] = np.log2(df['p'] / df['q'])
+    with warnings.catch_warnings():
+        warnings.filterwarnings('ignore', r'Mean of empty slice')
+        df['r'] = df['r~'] - np.nanmedian(df['r~'])
+    return df
+
+LETTERS = { "T" : TextPath((-0.305, 0), "T", size=1, prop=FontProperties(family="Arial", weight="bold") ),
+            "G" : TextPath((-0.384, 0), "G", size=1, prop=FontProperties(family="Arial", weight="bold") ),
+            "A" : TextPath((-0.35, 0), "A", size=1, prop=FontProperties(family="Arial", weight="bold") ),
+            "C" : TextPath((-0.366, 0), "C", size=1, prop=FontProperties(family="Arial", weight="bold") ) }
+COLOR_SCHEME = {'G': 'orange', 
+                    'A': 'red', 
+                    'C': 'blue', 
+                    'T': 'darkgreen'}
+
+def letterAt(letter, x, y, yscale=1, ax=None):
+    globscale = 1.35
+    
+    text = LETTERS[letter]
+
+    t = mpl.transforms.Affine2D().scale(1*globscale, yscale*globscale) + \
+        mpl.transforms.Affine2D().translate(x,y) + ax.transData
+    p = PathPatch(text, lw=0, fc=COLOR_SCHEME[letter],  transform=t)
+    if ax != None:
+        ax.add_artist(p)
+    return p
+
+def plot_EDLogo(motif, poi, sa, mu, sigma, fwd_metric, rev_metric, opt_dir, min_N=10, stddev=3.0, n_pseudo=5, Nnull=500):
+    poi = int(poi)
+    fig,(ax_frac,ax) = plt.subplots(2,1,sharex=True, gridspec_kw={'height_ratios': [1, 3], 'hspace':0.05})
+    
+    Nval = []
+    fracmod = []
+    all_scores_positive = []
+    all_scores_negative = []
+    for ind in range(-1,len(motif)+1):
+        #if ind == poi:
+        #    all_scores_positive.append([])
+        #    all_scores_negative.append([])
+        #else:
+        df = get_EDLogo_enrichment_scores(motif, poi, ind, sa, mu, sigma, fwd_metric, rev_metric, opt_dir, min_N=min_N, stddev=stddev, n_pseudo=n_pseudo, Nnull=Nnull)
+        all_scores_positive.append(list(df.loc[df.r >= 0][['base', 'r']].itertuples(index=False, name=None)))
+        all_scores_negative.append(list(df.loc[df.r < 0][['base', 'r']].itertuples(index=False, name=None)))
+        Nval.append(df.Nval.sum())
+        fracmod.append(df['mod'].sum() / df['Nval'].sum())
+    
+    ax_frac.plot(range(-1,len(motif)+1), fracmod, color="C1")
+    ax_frac_twin = ax_frac.twinx()
+    ax_frac_twin.plot(range(-1,len(motif)+1), Nval, color="C2")
+    ax_frac.spines['left'].set_color('C1')
+    ax_frac.spines['right'].set_color('C2')
+    ax_frac.yaxis.label.set_color('C1')
+    ax_frac_twin.yaxis.label.set_color('C2')
+    ax_frac.set(ylabel="fraction\nmodified")
+    ax_frac_twin.set(ylabel="valid\ncoverage")
+    
+    x = -1
+    maxi = 0
+    for scores in all_scores_positive:
+        y = 0
+        for base, score in scores:
+            letterAt(base, x,y, score, ax)
+            y += score
+        x += 1
+        maxi = max(maxi, y)
+
+    x = -1
+    mini = 0
+    for scores in all_scores_negative:
+        y = 0
+        for base, score in scores:
+            y += score
+            letterAt(base, x,y, np.abs(score), ax)
+            #y += score
+        x += 1
+        mini = min(mini, y)
+    ax.set_xticks(range(-1,x))
+    ax.set_xlim((-2, x))
+    ax.set_ylim(mini-0.1, maxi+0.1) 
+
+    for i in range(0, len(motif)):
+        if motif[i] != 'N':
+            ax.axvspan(i-0.5, i+0.5, facecolor='black', alpha=0.2, zorder=-100)
+
+    motif_exp = ["N"] + list(motif[:poi]) + [motif[poi]+'*'] + list(motif[poi+1:]) + ["N"]
+    ax.set_xticklabels(motif_exp)
+    ax.axhline(0, linewidth=1.)
+    plt.show(block=False)
+
+    pass
+
+def test_ambiguous_logo(motif, poi, sa, max_motif_len, mu, sigma, fwd_metric, rev_metric, aggr_fct, opt_dir, ambiguity_thr, min_N=30, debug=False, min_tests=2, bases="AC", rec=False):
+    biparite = False
+    if "NNN" in motif: # bipartite
+        biparite = True
+        # only check flanking Ns
+        callback = lambda pat: pat.group(1)+pat.group(2).lower()+pat.group(3)
+        motif_ = re.sub(r"(N)(N+)(N)", callback, motif[:])
+    else:
+        motif_ = motif[:].replace('N', 'n')
+    motif_ = list(motif_)
+    ambiguous_pos = [-1, len(motif)]
+    for i in range(len(motif_)):
+        if motif_[i] == 'N':
+            ambiguous_pos.append(i)
+    for i in ambiguous_pos:
+        df = get_EDLogo_enrichment_scores(motif, poi, i, sa, mu, sigma, fwd_metric, rev_metric, opt_dir, min_N=min_N, stddev=3.0, n_pseudo=5, Nnull=500)
+        if debug:
+            print(df)
+        if (df['mod'] >= min_N).sum() < min_tests or \
+           np.abs(df['r']).max() > abs(ambiguity_thr) or \
+           df.shape[0] < min_tests:
+            if biparite and not rec:
+                rc = reverse_complement(motif)
+                if rc != motif:
+                    # determine poi in RC
+                    aggregates, Ns = aggr_fct([rc], len(rc), fwd_metric, rev_metric, sa, bases=bases)
+                    if opt_dir == "min":
+                        best_aggregate = np.nanmin(aggregates[0])
+                    else:
+                        best_aggregate = np.nanmax(aggregates[0])
+                    assert ~np.isnan(best_aggregate), f"unhandled exception: found no motif aggregate for motif {diff}"
+                    if opt_dir == "min":
+                        poi_rc = np.nanargmin(aggregates[0])
+                    else:
+                        poi_rc = np.nanargmax(aggregates[0])
+                    if debug:
+                        print(f'fail, check RC {rc}:{int(poi)}')
+                    if test_ambiguous_logo(rc, poi_rc, sa, max_motif_len, mu, sigma, fwd_metric, rev_metric, aggr_fct, opt_dir, ambiguity_thr, min_N=min_N, debug=debug, min_tests=min_tests, bases=bases, rec=True):
+                        return True
+            return False
+    return True
+
+def test_replace(motif, poi, sa, max_motif_len, mu, sigma, fwd_metric, rev_metric, aggr_fct, opt_dir, thr, min_N=30):
+    nonambiguous_pos = [i for i in range(len(motif)) if motif[i] != 'N'] # and i != poi
+    for i in nonambiguous_pos:
+        df = get_EDLogo_enrichment_scores(motif, poi, i, sa, mu, sigma, fwd_metric, rev_metric, opt_dir, min_N=min_N, stddev=3.0, n_pseudo=5, Nnull=500)
+        sel = df['base'].isin(IUPAC_TO_LIST[motif[i]])
+        if sel.sum() != len(IUPAC_TO_LIST[motif[i]]):
+            return False
+        if not np.all(df.loc[sel, 'r'] >= thr):
+            return False
+    return True
+
+def test_replace_order(motif, poi, sa, max_motif_len, mu, sigma, fwd_metric, rev_metric, aggr_fct, opt_dir, min_N=30):
+    nonambiguous_pos = [i for i in range(len(motif)) if motif[i] != 'N'] # and i != poi
+    for i in nonambiguous_pos:
+        df = get_EDLogo_enrichment_scores(motif, poi, i, sa, mu, sigma, fwd_metric, rev_metric, opt_dir, min_N=min_N, stddev=3.0, n_pseudo=5, Nnull=500)
+        sel = df['base'].isin(IUPAC_TO_LIST[motif[i]])
+        if sel.sum() != len(IUPAC_TO_LIST[motif[i]]):
+            return False
+        if set(df.sort_values('r', ascending=False)[:len(IUPAC_TO_LIST[motif[i]])]['base']) != set(IUPAC_TO_LIST[motif[i]]):
+            return False
+    return True
+
+def test_replace_max(motif, poi, sa, max_motif_len, mu, sigma, fwd_metric, rev_metric, aggr_fct, opt_dir, thr, min_N=30):
+    nonambiguous_pos = [i for i in range(len(motif)) if motif[i] != 'N'] # and i != poi
+    for i in nonambiguous_pos:
+        df = get_EDLogo_enrichment_scores(motif, poi, i, sa, mu, sigma, fwd_metric, rev_metric, opt_dir, min_N=min_N, stddev=3.0, n_pseudo=5, Nnull=500)
+        sel = df['base'].isin(IUPAC_TO_LIST[motif[i]])
+        if sel.sum() != len(IUPAC_TO_LIST[motif[i]]):
+            return False
+        if not np.all(df.loc[~sel, 'r'] <= thr):
+            return False
+    return True
+
+def test_replace_total(motif, poi, sa, max_motif_len, mu, sigma, fwd_metric, rev_metric, aggr_fct, opt_dir, thr, min_N=30):
+    nonambiguous_pos = [i for i in range(len(motif)) if motif[i] != 'N'] # and i != poi
+    for i in nonambiguous_pos:
+        df = get_EDLogo_enrichment_scores(motif, poi, i, sa, mu, sigma, fwd_metric, rev_metric, opt_dir, min_N=min_N, stddev=3.0, n_pseudo=5, Nnull=500)
+        if not df['r'].abs().sum() >= thr:
+            return False
+    return True
+
+def test_ambiguous(motif, poi, sa, max_motif_len, mu, sigma, fwd_metric, rev_metric, aggr_fct, opt_dir, ambiguity_thr, min_N=30, debug=False, min_tests=2, bases="AC", rec=False, ambiguity_type='logo'):
+    if ambiguity_type == 'logo':
+        return test_ambiguous_logo(motif, poi, sa, max_motif_len, mu, sigma, fwd_metric, rev_metric, aggr_fct, opt_dir, ambiguity_thr, min_N=min_N, debug=debug, min_tests=min_tests, bases=bases, rec=rec)
+    elif ambiguity_type == 'metric':
+        return test_ambiguous_metric(motif, poi, sa, max_motif_len, mu, sigma, fwd_metric, rev_metric, aggr_fct, opt_dir, ambiguity_thr, min_N=min_N, debug=debug, min_tests=min_tests, bases=bases, rec=rec)
+
 def explode_motif(motif):
     exploded_motifs = IUPAC_TO_LIST[motif[0]][:]
     for i in range(1,len(motif)):
@@ -917,7 +1164,7 @@ def explode_motif(motif):
         exploded_motifs = exploded_motifs_
     return exploded_motifs
 
-def test_exploded(motif, sa, max_motif_len, mu, sigma, fwd_metric, rev_metric, aggr_fct, opt_dir, selection_thr, min_N=30, debug=False, bases="AC"):
+def test_exploded(motif, poi, sa, max_motif_len, mu, sigma, fwd_metric, rev_metric, aggr_fct, opt_dir, selection_thr, min_N=30, debug=False, bases="AC"):
     to_test = explode_motif(motif)
     if len(to_test) == 1:
         return True
@@ -954,10 +1201,10 @@ def test_exploded(motif, sa, max_motif_len, mu, sigma, fwd_metric, rev_metric, a
     else:
         return max_stddev_per_poi[best_poi] > selection_thr
 
-def get_pois(motif):
+def get_pois(motif, bases="AC"):
     pois = []
     for i in range(len(motif)):
-        if motif[i] in "CA":
+        if motif[i] in bases:
             pois.append(i)
     return pois
 
@@ -1098,7 +1345,7 @@ def resolve_nested_motif_graph(sG, d, sa, max_motif_len, mu, sigma, fwd_metric, 
         d = d.drop([n for n in all_sG_nodes if n in d.index and n not in list(sG)])
     return d
 
-def prune_combined_node(n, v, sG, d, sa, max_motif_len, mu, sigma, fwd_metric, rev_metric, aggr_fct, opt_dir, thr, ambiguity_thr, ambiguity_min_sites, ambiguity_min_tests, bases="AC"):
+def prune_combined_node(n, v, sG, d, sa, max_motif_len, mu, sigma, fwd_metric, rev_metric, aggr_fct, opt_dir, thr, ambiguity_thr, ambiguity_min_sites, ambiguity_min_tests, replace_min_enrichment, bases="AC", ambiguity_type='logo'):
     """
     Prune node n that is the result of a motif combination of v, but test if the difference n - v passes tests and shall remain.
     Also, recursively apply the same principle to nodes that were combined from n
@@ -1111,7 +1358,7 @@ def prune_combined_node(n, v, sG, d, sa, max_motif_len, mu, sigma, fwd_metric, r
     for u in comb_nodes:
         if u in d.index:
             # climb up the tree towards root nodes
-            d = prune_combined_node(u, n, sG, d, sa, max_motif_len, mu, sigma, fwd_metric, rev_metric, aggr_fct, opt_dir, thr, ambiguity_thr, ambiguity_min_sites, ambiguity_min_tests, bases=bases)
+            d = prune_combined_node(u, n, sG, d, sa, max_motif_len, mu, sigma, fwd_metric, rev_metric, aggr_fct, opt_dir, thr, ambiguity_thr, ambiguity_min_sites, ambiguity_min_tests, replace_min_enrichment, bases=bases, ambiguity_type=ambiguity_type)
     # find the index where the combined motif u matches n
     # TODO: pass on this information from the actual combination call
     indices = []
@@ -1120,14 +1367,11 @@ def prune_combined_node(n, v, sG, d, sa, max_motif_len, mu, sigma, fwd_metric, r
         idx,_,_ = motif_contains(d.loc[v, 'motif'], m, d.loc[v, 'bipartite'])
         if idx is not None:
             indices.append(idx)
-    assert len(indices) != 0, f"no exploded motif of the combined motif {d.loc[n, 'motif']} is found in {d.loc[v, 'motif']} that it was combined from"
-    assert len(set(indices)) == 1, f"Unhandled case: exploded motifs of the combined motif {d.loc[u, 'motif']} are found at different indices in  {d.loc[v, 'motif']} that it was combined from"
-    idx = indices[0]
-    diff = motif_diff(d.loc[n, 'motif'], d.loc[v, 'motif'][idx:idx+len(d.loc[n, 'motif'])], 0, subtract_matching=True)
-    passed = test_ambiguous(diff, sa, max_motif_len, mu, sigma, fwd_metric, rev_metric, aggr_fct, opt_dir, ambiguity_thr, min_N=ambiguity_min_sites, min_tests=ambiguity_min_tests, bases=bases) and \
-             test_exploded(diff, sa, max_motif_len, mu, sigma, fwd_metric, rev_metric, aggr_fct, opt_dir, thr, bases=bases)
-    # add a new independent node if tests were passed
-    if passed:
+    #assert len(indices) != 0, f"no exploded motif of the combined motif {d.loc[n, 'motif']} is found in {d.loc[v, 'motif']} that it was combined from"
+    if len(indices) != 0:
+        assert len(set(indices)) == 1, f"Unhandled case: exploded motifs of the combined motif {d.loc[u, 'motif']} are found at different indices in  {d.loc[v, 'motif']} that it was combined from"
+        idx = indices[0]
+        diff = motif_diff(d.loc[n, 'motif'], d.loc[v, 'motif'][idx:idx+len(d.loc[n, 'motif'])], 0, subtract_matching=True)
         aggregates, Ns = aggr_fct([diff], len(diff), fwd_metric, rev_metric, sa, bases=bases)
         if opt_dir == "min":
             best_aggregate = np.nanmin(aggregates[0])
@@ -1140,12 +1384,21 @@ def prune_combined_node(n, v, sG, d, sa, max_motif_len, mu, sigma, fwd_metric, r
             poi = np.nanargmax(aggregates[0])
         N = min(Ns[0][poi], len(mu)-1)
         stddev = (best_aggregate - mu[N]) / sigma[N]
-        new = pd.Series([diff, poi, aggregates[0][poi], Ns[0][poi], stddev, norm().cdf(stddev), True, None, False], index=d.columns)
-        if ~d.motif.eq(new.motif).any():
-            logging.info(f"Added motif {new.motif}:{poi} ({new.N}, {new.stddevs:.2f}) as difference {d.loc[n, 'motif']} - {d.loc[v, 'motif']}")
-            d.loc[d.index.max()+1] = new
+        passed = test_ambiguous(diff, poi, sa, max_motif_len, mu, sigma, fwd_metric, rev_metric, aggr_fct, opt_dir, ambiguity_thr, min_N=ambiguity_min_sites, min_tests=ambiguity_min_tests, bases=bases, ambiguity_type=ambiguity_type) and \
+                test_exploded(diff, poi, sa, max_motif_len, mu, sigma, fwd_metric, rev_metric, aggr_fct, opt_dir, thr, bases=bases)
+        if args.ambiguity_type == 'logo':
+            passed &= test_replace(diff, poi, sa, max_motif_len, mu, sigma, fwd_metric, rev_metric, aggr_fct, opt_dir, replace_min_enrichment, min_N=ambiguity_min_sites)
+
+        # add a new independent node if tests were passed
+        if passed:
+            new = pd.Series([diff, poi, aggregates[0][poi], Ns[0][poi], stddev, norm().cdf(stddev), True, None, False], index=d.columns)
+            if ~d.motif.eq(new.motif).any():
+                logging.info(f"Added motif {new.motif}:{poi} ({new.N}, {new.stddevs:.2f}) as difference {d.loc[n, 'motif']} - {d.loc[v, 'motif']}")
+                d.loc[d.index.max()+1] = new
+        else:
+            logging.info(f"Motif {diff} as difference {d.loc[n, 'motif']} - {d.loc[v, 'motif']} did not pass tests")
     else:
-        logging.info(f"Motif {diff} as difference {d.loc[n, 'motif']} - {d.loc[v, 'motif']} did not pass tests")
+        logging.debug(f"no exploded motif of the combined motif {d.loc[n, 'motif']} is found in {d.loc[v, 'motif']} that it was combined from")
     # remove node n, if it is still in the graph, pruning its outgoing edges
     pruned = prune_edges(sG, list(sG.out_edges(n)), d)
     d = d.drop(pruned)
@@ -1154,7 +1407,19 @@ def prune_combined_node(n, v, sG, d, sa, max_motif_len, mu, sigma, fwd_metric, r
     d = d.drop(n)
     return d
 
-def resolve_combined_motif_graph(sG, d, sa, max_motif_len, mu, sigma, fwd_metric, rev_metric, aggr_fct, opt_dir, thr, ambiguity_thr, ambiguity_min_sites, ambiguity_min_tests, bases="AC"):
+def final_motif_filter(motif, poi, sa, max_motif_len, mu, sigma, fwd_metric, rev_metric, aggr_fct, opt_dir, min_N=30):
+    #if not test_replace_max(motif, poi, sa, max_motif_len, mu, sigma, fwd_metric, rev_metric, aggr_fct, opt_dir, 1., min_N=min_N):
+    #    breakpoint()
+    #    test_replace_max(motif, poi, sa, max_motif_len, mu, sigma, fwd_metric, rev_metric, aggr_fct, opt_dir, 1., min_N=min_N)
+    #if motif == "GAATGGT":
+    #    plot_EDLogo(motif, poi, sa, mu, sigma, fwd_metric, rev_metric, opt_dir, min_N=min_N, stddev=3.0, n_pseudo=5, Nnull=500)
+    #    breakpoint()
+    passes = test_replace_order(motif, poi, sa, max_motif_len, mu, sigma, fwd_metric, rev_metric, aggr_fct, opt_dir, min_N=min_N) #and \
+             #test_replace_max(motif, poi, sa, max_motif_len, mu, sigma, fwd_metric, rev_metric, aggr_fct, opt_dir, 1., min_N=min_N) # not a good idea, see CTYGAG/CTCRAG in MS107 --> CTTAAG NOT permitted, but appears enriched in CTY_AG
+    passes &= test_replace_total(motif, poi, sa, max_motif_len, mu, sigma, fwd_metric, rev_metric, aggr_fct, opt_dir, 1., min_N=min_N)
+    return passes
+
+def resolve_combined_motif_graph(sG, d, sa, max_motif_len, mu, sigma, fwd_metric, rev_metric, aggr_fct, opt_dir, thr, ambiguity_thr, ambiguity_min_sites, ambiguity_min_tests, replace_min_enrichment, bases="AC", ambiguity_type='logo'):
     all_sG_nodes = list(sG)
     # resolve graph, starting with root nodes
     while True:
@@ -1165,6 +1430,12 @@ def resolve_combined_motif_graph(sG, d, sa, max_motif_len, mu, sigma, fwd_metric
                 pruned = prune_edges(sG, list(sG.out_edges(root_node)), d)
                 d = d.drop(pruned)
                 logging.getLogger('comos').info(f"pruned previously flagged root node {d.loc[root_node, 'motif']} and consequently pruned {len(pruned)} other nodes")
+                sG.remove_node(root_node)
+                d = d.drop(root_node)
+                break
+            # check if node passes final filtering
+            if not final_motif_filter(d.loc[root_node, 'motif'], d.loc[root_node, 'poi'], sa, max_motif_len, mu, sigma, fwd_metric, rev_metric, aggr_fct, opt_dir, min_N=ambiguity_min_sites):
+                logging.getLogger('comos').info(f"removed root node {d.loc[root_node, 'motif']}, did not pass final filtering")
                 sG.remove_node(root_node)
                 d = d.drop(root_node)
                 break
@@ -1188,15 +1459,12 @@ def resolve_combined_motif_graph(sG, d, sa, max_motif_len, mu, sigma, fwd_metric
                     # prioritize motifs with RC over those without
                     # keep RC (which is not necessarily a root node) and handle all motifs that it was combined to
                     rc = d.loc[n, 'rc']
-                    try:
-                        comb_nodes = [u for u,_ in sG.in_edges(rc)]
-                    except:
-                        breakpoint()
+                    comb_nodes = [u for u,_ in sG.in_edges(rc)]
                     for u in comb_nodes:
                         sG.remove_edge(u,rc)
                     for u in comb_nodes:
-                        if u in d.index:
-                            d = prune_combined_node(u, rc, sG, d, sa, max_motif_len, mu, sigma, fwd_metric, rev_metric, aggr_fct, opt_dir, thr, ambiguity_thr, ambiguity_min_sites, ambiguity_min_tests, bases=bases)
+                        if u in d.index and u != n:
+                            d = prune_combined_node(u, rc, sG, d, sa, max_motif_len, mu, sigma, fwd_metric, rev_metric, aggr_fct, opt_dir, thr, ambiguity_thr, ambiguity_min_sites, ambiguity_min_tests, replace_min_enrichment, bases=bases, ambiguity_type=ambiguity_type)
                     
                     # prune graph for nodes that were combined to this one and its RC
                     pruned, pruned_rc = [], []
@@ -1219,58 +1487,85 @@ def resolve_combined_motif_graph(sG, d, sa, max_motif_len, mu, sigma, fwd_metric
                             break
         if len(sG.edges) == 0 and ~np.any(d.to_prune):
             break
+    # check last time if all motifs pass final filtering
+    root_nodes = [n for n,deg in sG.in_degree() if deg==0]
+    for root_node in root_nodes:
+        # check if node passes final filtering
+        if not final_motif_filter(d.loc[root_node, 'motif'], d.loc[root_node, 'poi'], sa, max_motif_len, mu, sigma, fwd_metric, rev_metric, aggr_fct, opt_dir, min_N=ambiguity_min_sites):
+            logging.getLogger('comos').info(f"removed root node {d.loc[root_node, 'motif']}, did not pass final filtering")
+            sG.remove_node(root_node)
+            d = d.drop(root_node)
     if len(d.loc[d.index.isin(all_sG_nodes)]) != len(list(sG)):
         d = d.drop([n for n in all_sG_nodes if n in d.index and n not in list(sG)])
     return d
 
 
-def test_combine_motifs(d, i, j, sa, max_motif_len, mu, sigma, fwd_metric, rev_metric, aggr_fct, opt_dir, thr, ambiguity_thr, ambiguity_min_sites, ambiguity_min_tests, min_k, bases="AC"):
+def test_combine_motifs(d, i, j, sa, max_motif_len, mu, sigma, fwd_metric, rev_metric, aggr_fct, opt_dir, thr, ambiguity_thr, ambiguity_min_sites, ambiguity_min_tests, replace_min_enrichment, min_k, bases="AC", ambiguity_type='logo'):
     combined_motifs = [m for m in combine_motifs(d.loc[i].motif, d.loc[j].motif) if len(m) > min_k]
     if opt_dir == "min":
         best = [None, None, np.inf, 0, np.inf, np.inf, d.loc[i].bipartite]
     else:
         best = [None, None, -np.inf, 0, -np.inf, np.inf, d.loc[i].bipartite]
-    keep_combined, drop_mi, drop_mj = False, True, True
+    keep_combined, drop_mi, drop_mj = False, False, False
     if len(combined_motifs) == 0:
         return best, keep_combined, drop_mi, drop_mj
     aggregates, Ns = aggr_fct(combined_motifs, max_motif_len, fwd_metric, rev_metric, sa, bases=bases)
     #calculate number of std. deviations
     for (m,motif) in enumerate(combined_motifs):
-        for poi in get_pois(motif):
-            N = min(Ns[m][poi], len(mu)-1)
-            stddevs = (aggregates[m][poi] - mu[N]) / sigma[N] # frequently throws RuntimeWarnings "invalid value encountered in scalar divide" and "divide by zero encountered in divide"
-            if (opt_dir == "min" and stddevs < best[4]) or (opt_dir == "max" and stddevs > best[4]):
-                if (opt_dir == "min" and stddevs <= thr) or (opt_dir == "max" and stddevs >= thr):
-                    # check if combined motif passes tests
-                    # check ambiguity (if the motif is too short)
-                    if not test_ambiguous(motif, sa, max_motif_len, mu, sigma, fwd_metric, rev_metric, aggr_fct, opt_dir, ambiguity_thr, min_N=ambiguity_min_sites, min_tests=ambiguity_min_tests, bases=bases):
-                        #if d.loc[i].bipartite:
-                        #    # for bipartite motifs, it is ok if only the RC passes, since it is also always methylated
-                        #    if test_ambiguous(reverse_complement(motif), sa, max_motif_len, mu, sigma, fwd_metric, rev_metric, aggr_fct, opt_dir, ambiguity_thr, min_N=ambiguity_min_sites, min_tests=ambiguity_min_tests, bases=bases):
-                        #        logging.getLogger('comos').info(f'ambiguous test failed for combined motif {motif} but not for its RC --> kept.')
-                        #    else:
-                        #        continue
-                        #else:
-                        #    continue
-                        logging.getLogger('comos').debug(f'ambiguous test failed for combined motif {motif}')
+        #for poi in get_pois(motif):
+        if np.all(np.isnan(aggregates[m])):
+            logging.getLogger('comos').debug(f"no motif aggregate for motif {motif}")
+            continue
+        if opt_dir == "min":
+            best_aggregate = np.nanmin(aggregates[m])
+        else:
+            best_aggregate = np.nanmax(aggregates[m])
+        if opt_dir == "min":
+            poi = np.nanargmin(aggregates[m])
+        else:
+            poi = np.nanargmax(aggregates[m])
+        N = min(Ns[m][poi], len(mu)-1)
+        stddev = (best_aggregate - mu[N]) / sigma[N]
+        if (opt_dir == "min" and stddev < best[4]) or (opt_dir == "max" and stddev > best[4]):
+            if (opt_dir == "min" and stddev <= thr) or (opt_dir == "max" and stddev >= thr):
+                # check if combined motif passes tests
+                # check ambiguity (if the motif is too short)
+                if not test_ambiguous(motif, poi, sa, max_motif_len, mu, sigma, fwd_metric, rev_metric, aggr_fct, opt_dir, ambiguity_thr, min_N=ambiguity_min_sites, min_tests=ambiguity_min_tests, bases=bases, ambiguity_type=ambiguity_type):
+                    #if d.loc[i].bipartite:
+                    #    # for bipartite motifs, it is ok if only the RC passes, since it is also always methylated
+                    #    if test_ambiguous(reverse_complement(motif), sa, max_motif_len, mu, sigma, fwd_metric, rev_metric, aggr_fct, opt_dir, ambiguity_thr, min_N=ambiguity_min_sites, min_tests=ambiguity_min_tests, bases=bases):
+                    #        logging.getLogger('comos').info(f'ambiguous test failed for combined motif {motif} but not for its RC --> kept.')
+                    #    else:
+                    #        continue
+                    #else:
+                    #    continue
+                    logging.getLogger('comos').debug(f'ambiguous test failed for combined motif {motif}')
+                    continue
+                # test if all exploded, canonical motifs of the combined motif are above the selection threshold
+                if not test_exploded(motif, poi, sa, max_motif_len, mu, sigma, fwd_metric, rev_metric, aggr_fct, opt_dir, thr, bases=bases):
+                    logging.getLogger('comos').debug(f'exploded motif test failed for combined motif {motif}')
+                    continue
+                if ambiguity_type == 'logo':
+                    if not test_replace(motif, poi, sa, max_motif_len, mu, sigma, fwd_metric, rev_metric, aggr_fct, opt_dir, replace_min_enrichment, min_N=ambiguity_min_sites):
+                        logging.getLogger('comos').debug(f'replace test failed for combined motif {motif}')
                         continue
-                    # test if all exploded, canonical motifs of the combined motif are above the selection threshold
-                    if not test_exploded(motif, sa, max_motif_len, mu, sigma, fwd_metric, rev_metric, aggr_fct, opt_dir, thr, bases=bases):
-                        logging.getLogger('comos').debug(f'exploded motif test failed for combined motif {motif}')
-                        continue
-                    if opt_dir == "min":
-                        best = [motif, poi, aggregates[m][poi], Ns[m][poi], stddevs, norm().cdf(stddevs), d.loc[i].bipartite]
-                    else:
-                        best = [motif, poi, aggregates[m][poi], Ns[m][poi], stddevs, 1. - norm().cdf(stddevs), d.loc[i].bipartite]
+                if opt_dir == "min":
+                    best = [motif, poi, best_aggregate, N, stddev, norm().cdf(stddev), d.loc[i].bipartite]
+                else:
+                    best = [motif, poi, best_aggregate, N, stddev, 1. - norm().cdf(stddev), d.loc[i].bipartite]
     keep_combined = best[0] is not None
-    if not keep_combined:
+    if keep_combined:
+        drop_mi, drop_mj = True, True
+    else:
+        if set([i, j]) == set([729, 853]):
+            breakpoint()
         # check if any of the combined motifs is contained in one of the motifs that are being combined
         for motif in combined_motifs:
             if len(motif) <= len(d.loc[i].motif):
                 idx, ident, diff_locs = motif_contains(d.loc[i].motif, motif, d.loc[i].bipartite)
                 if idx is not None:
                     if len(diff_locs) <= 1:
-                        drop_mi = True
+                        drop_mj = True
                     #elif len(diff_locs) <= 2:
                     #    m_diff = motif_diff(d.loc[i].motif, motif, idx)
                     #    aggregates, Ns = aggr_fct([m_diff], len(m_diff), fwd_metric, rev_metric, sa, bases=bases)
@@ -1296,7 +1591,7 @@ def test_combine_motifs(d, i, j, sa, max_motif_len, mu, sigma, fwd_metric, rev_m
                 idx, ident, diff_locs = motif_contains(d.loc[j].motif, motif, d.loc[j].bipartite)
                 if idx is not None:
                     if len(diff_locs) <= 1:
-                        drop_mj = True
+                        drop_mi = True
                     #elif len(diff_locs) <= 2:
                     #    m_diff = motif_diff(d.loc[j].motif, motif, idx)
                     #    aggregates, Ns = aggr_fct([m_diff], len(m_diff), fwd_metric, rev_metric, sa, bases=bases)
@@ -1318,20 +1613,34 @@ def test_combine_motifs(d, i, j, sa, max_motif_len, mu, sigma, fwd_metric, rev_m
                     #        # do NOT keep combined motif, but motif j
                     #        drop_mj = False
                     #    #drop_mj = False
+            if drop_mi and drop_mj:
+                # is combined in both, take the shorter one or the better scoring one
+                len_i = (len(d.loc[i].motif) - d.loc[i].motif.count('N'))
+                len_j = (len(d.loc[j].motif) - d.loc[j].motif.count('N'))
+                if len_i < len_j:
+                    drop_mi = False
+                elif len_j < len_i:
+                    drop_mj = False
+                elif (opt_dir == "min" and d.loc[i].stddevs <= d.loc[j].stddevs) or (opt_dir == "max" and d.loc[i].stddevs >= d.loc[j].stddevs):
+                    drop_mi = False
+                else:
+                    drop_mj = False
     return best, keep_combined, drop_mi, drop_mj
 
-def reduce_motifs(d, sa, max_motif_len, mu, sigma, fwd_metric, rev_metric, aggr_fct, opt_dir, thr, ambiguity_thr, ambiguity_min_sites, ambiguity_min_tests, min_k, bases="AC"):
+def reduce_motifs(d, sa, max_motif_len, mu, sigma, fwd_metric, rev_metric, aggr_fct, opt_dir, thr, ambiguity_thr, ambiguity_min_sites, ambiguity_min_tests, replace_min_enrichment, min_k, bases="AC", ambiguity_type='logo'):
     d = d.copy().sort_values(['N','stddevs'], ascending=[False,True])
     d['bipartite'] = d.motif.str.contains('NN')
+    
     # initial filtering
-    if ambiguity_thr is not None:
-        d['pass'] = d.apply(lambda row: test_ambiguous(row.motif, sa, max_motif_len, mu, sigma, fwd_metric, rev_metric, aggr_fct, opt_dir, ambiguity_thr, min_N=ambiguity_min_sites, min_tests=ambiguity_min_tests, bases=bases), axis=1)
-        for i,row in d.loc[d['pass'] == False].iterrows():
-            logging.getLogger('comos').debug(f"excluded {row.motif}:{row.poi} ({row.N}, {row.stddevs:.2f}) : did not pass ambiguity filter")
-        n_excluded = (d['pass'] == False).sum()
-        if n_excluded:
-            logging.info(f"Excluded {n_excluded:,} motifs because they did not pass ambiguity testing.")
-        #d = d.loc[d['pass']].drop(['pass'], axis=1)
+    d['pass'] = d.apply(lambda row: test_ambiguous(row.motif, row.poi, sa, max_motif_len, mu, sigma, fwd_metric, rev_metric, aggr_fct, opt_dir, ambiguity_thr, min_N=ambiguity_min_sites, min_tests=ambiguity_min_tests, bases=bases, ambiguity_type=ambiguity_type), axis=1)
+    if ambiguity_type == 'logo':
+        d.loc[d['pass'] == True, 'pass'] = d.loc[d['pass'] == True].apply(lambda row: test_replace(row.motif, row.poi, sa, max_motif_len, mu, sigma, fwd_metric, rev_metric, aggr_fct, opt_dir, replace_min_enrichment, min_N=ambiguity_min_sites), axis=1)
+    for i,row in d.loc[d['pass'] == False].iterrows():
+        logging.getLogger('comos').debug(f"excluded {row.motif}:{row.poi} ({row.N}, {row.stddevs:.2f}) : did not pass ambiguity filter")
+    n_excluded = (d['pass'] == False).sum()
+    if n_excluded:
+        logging.info(f"Excluded {n_excluded:,} motifs because they did not pass ambiguity testing.")
+    #d = d.loc[d['pass']].drop(['pass'], axis=1)
     logging.getLogger('comos').info(f"{len(d.loc[d['pass']])} motifs after ambiguity testing")
     print(d.loc[d['pass']].sort_values("stddevs", ascending=(opt_dir=="min")))
     
@@ -1361,7 +1670,7 @@ def reduce_motifs(d, sa, max_motif_len, mu, sigma, fwd_metric, rev_metric, aggr_
             for j, row in contain_i.iterrows():
                 #G.add_edge(i, j, weight=1, diff=diff, idx=idx)
                 G.add_edge(i, j, weight=row.slen - d.loc[i, 'slen'])
-    n_sGs = len([G.subgraph(c) for c in nx.connected_components(G.to_undirected()) if np.any(d.loc[list(c), 'pass'])])
+    n_sGs = len([G.subgraph(c) for c in nx.connected_components(G.to_undirected())])# if np.any(d.loc[list(c), 'pass'])])
     # remove long edges (difference more than one position)
     #G.remove_edges_from([(f, t) for f,t,d in G.edges.data() if d['weight'] > 1])
     sGs = []
@@ -1372,10 +1681,10 @@ def reduce_motifs(d, sa, max_motif_len, mu, sigma, fwd_metric, rev_metric, aggr_
             d = d.drop(list(sG))
         else:
             sGs.append(sG)
-    if len(sGs) != n_sGs:
-        # TODO : handle this, e.g. by keeping "longest" paths between any two nodes?
-        logging.getLogger('comos').warning(f"Unhandled case: Number of subgraphs changed from {n_sGs} to {len(sGs)} by removing edges with >1 edit distance between motifs.")
-    logging.getLogger('comos').info(f"{len(sGs)} subgraphs in nested motif network")
+    #if len(sGs) != n_sGs:
+    #    # TODO : handle this, e.g. by keeping "longest" paths between any two nodes?
+    #    logging.getLogger('comos').warning(f"Unhandled case: Number of subgraphs changed from {n_sGs} to {len(sGs)} by removing edges with >1 edit distance between motifs.")
+    logging.getLogger('comos').info(f"{n_sGs} subgraphs in nested motif network")
     logging.getLogger('comos').info(f"{len(sGs)} subgraphs with any valid motif")
 
     for sG in sGs:
@@ -1471,7 +1780,6 @@ def reduce_motifs(d, sa, max_motif_len, mu, sigma, fwd_metric, rev_metric, aggr_
                 if reverse_complement(d.loc[j, 'motif']) == d.loc[i, 'motif']:
                     d.loc[i, 'rc'] = j
         for i in d.loc[d.bipartite & pd.isna(d.rc)].index:
-            print(i)
             for j in d.loc[d.bipartite].index:
                 idx, ident, diff = motif_contains(reverse_complement(d.loc[i].motif), d.loc[j].motif, bipartite=True)
                 if idx is not None and len(diff) == 1:
@@ -1585,7 +1893,9 @@ def reduce_motifs(d, sa, max_motif_len, mu, sigma, fwd_metric, rev_metric, aggr_
                     continue
                 tested.add((d.loc[i].motif, d.loc[j].motif))
 
-                best, keep_combined, drop_mi, drop_mj = test_combine_motifs(d, i, j, sa, max_motif_len, mu, sigma, fwd_metric, rev_metric, aggr_fct, opt_dir, thr, ambiguity_thr, ambiguity_min_sites, ambiguity_min_tests, min_k, bases=bases)
+                best, keep_combined, drop_mi, drop_mj = test_combine_motifs(d, i, j, sa, max_motif_len, mu, sigma, fwd_metric, rev_metric, aggr_fct, opt_dir, thr, ambiguity_thr, ambiguity_min_sites, ambiguity_min_tests, replace_min_enrichment, min_k, bases=bases, ambiguity_type=ambiguity_type)
+                if set([i, j]) == set([729, 853]):
+                    breakpoint()
                 if keep_combined:
                     new = pd.Series(best+[None], index=d.columns)
                     if ~d.motif.eq(new.motif).any():
@@ -1604,8 +1914,8 @@ def reduce_motifs(d, sa, max_motif_len, mu, sigma, fwd_metric, rev_metric, aggr_
                 elif drop_mj and not drop_mi:
                     G.add_edge(i, j)
                     changed = True
-                elif best[0]:
-                    logging.getLogger('comos').warning(f"unhandled case: combined motif and both original motifs ({d.loc[i].motif} and {d.loc[j].motif}) shall be dropped")
+                elif drop_mi and drop_mj:
+                    logging.getLogger('comos').warning(f"unhandled case: both original motifs ({d.loc[i].motif} and {d.loc[j].motif}) shall be dropped")
                     breakpoint()
                 #if best[0]:
                     #if keep_combined:
@@ -1694,7 +2004,7 @@ def reduce_motifs(d, sa, max_motif_len, mu, sigma, fwd_metric, rev_metric, aggr_
         breakpoint()
 
     d['to_prune'] = False
-    d = resolve_combined_motif_graph(G, d, sa, max_motif_len, mu, sigma, fwd_metric, rev_metric, aggr_fct, opt_dir, thr, ambiguity_thr, ambiguity_min_sites, ambiguity_min_tests, bases=bases)
+    d = resolve_combined_motif_graph(G, d, sa, max_motif_len, mu, sigma, fwd_metric, rev_metric, aggr_fct, opt_dir, thr, ambiguity_thr, ambiguity_min_sites, ambiguity_min_tests, replace_min_enrichment, bases=bases, ambiguity_type=ambiguity_type)
     logging.info(f"{len(d)} combined motifs remaining after resolving the combined motif graph:")
     print(d)
 
@@ -1811,12 +2121,19 @@ def find_methylated_motifs(all_canon_motifs, fwd_metric, rev_metric, sa, res_dir
             res['p-value'] = 1.0 - norm().cdf(res['stddevs'])
         for m,row in res.iterrows():
             print(f"\nAmbiguous-Test results for motif {m}:{int(row.poi)}")
-            passed = test_ambiguous(m, sa, len(m), mu, sigma, fwd_metric, rev_metric, aggr_fct, opt_dir, ambiguity_thr, min_N=args.ambiguity_min_sites, debug=True, min_tests=args.ambiguity_min_tests, bases=args.bases)
-            print("Passed:", passed)
+            passed = test_ambiguous(m, row.poi, sa, len(m), mu, sigma, fwd_metric, rev_metric, aggr_fct, opt_dir, ambiguity_thr, min_N=args.ambiguity_min_sites, debug=True, min_tests=args.ambiguity_min_tests, bases=args.bases, ambiguity_type=args.ambiguity_type)
+            print("Passed:", passed, '\n')
+
+            if args.ambiguity_type == 'logo':
+                print(f"\nReplace-Test results for motif {m}:{int(row.poi)}")
+                passed = test_replace(m, row.poi, sa, len(m), mu, sigma, fwd_metric, rev_metric, aggr_fct, opt_dir, args.replace_min_enrichment, min_N=args.ambiguity_min_sites)
+                print("Passed:", passed, '\n')
+
             print(f"\nExploded-Test results for motif {m}:{int(row.poi)}")
-            passed = test_exploded(m, sa, len(m), mu, sigma, fwd_metric, rev_metric, aggr_fct, opt_dir, selection_thr, debug=True, bases=args.bases)
-            print("Passed:", passed)
-            print()
+            passed = test_exploded(m, row.poi, sa, len(m), mu, sigma, fwd_metric, rev_metric, aggr_fct, opt_dir, selection_thr, debug=True, bases=args.bases)
+            print("Passed:", passed, '\n')
+
+            plot_EDLogo(m, row.poi, sa, mu, sigma, fwd_metric, rev_metric, opt_dir, min_N=args.ambiguity_min_sites, stddev=3.0, n_pseudo=5, Nnull=500)
         
         if args.plot and args.mod.lower().endswith(".rds") and 0:
             fwd_diff, rev_diff = compute_diffs(df, seq)
@@ -1825,6 +2142,7 @@ def find_methylated_motifs(all_canon_motifs, fwd_metric, rev_metric, sa, res_dir
                 plot_diffs_with_complementary(m, sa, fwd_diff, rev_diff, savepath=os.path.join(res_dir, f"{m}_{int(row.poi)}.png"), ymax=10., absolute=True)
         res = res.reset_index().rename(columns={'index':'motif'})
         print(res)
+        breakpoint()
         return#exit()
     if args.plot:
         plot_motif_scores(results, mu, sigma, med, iqr, thr=selection_thr, outlier_iqr=args.outlier_iqr, savepath=os.path.join(res_dir, f"scores_scatterplot.png"))
@@ -1834,7 +2152,7 @@ def find_methylated_motifs(all_canon_motifs, fwd_metric, rev_metric, sa, res_dir
     else:
         sel = (results.stddevs >= selection_thr)
     logging.getLogger('comos').info(f"Selected {sel.sum():,} motifs based on selection threshold of {selection_thr} std. deviations.")
-    print(results.sort_values('stddevs', ascending=(opt_dir == "min")))
+    print(results.loc[sel].sort_values('stddevs', ascending=(opt_dir == "min")))
     if sel.sum() == 0:
         logging.getLogger('comos').warning("No motifs found given the current set of parameters.")
         return
@@ -1850,8 +2168,10 @@ def find_methylated_motifs(all_canon_motifs, fwd_metric, rev_metric, sa, res_dir
         ambiguity_thr=ambiguity_thr,
         ambiguity_min_sites=args.ambiguity_min_sites,
         ambiguity_min_tests=args.ambiguity_min_tests,
+        replace_min_enrichment=args.replace_min_enrichment,
         min_k=args.min_k,
-        bases=args.bases)
+        bases=args.bases,
+        ambiguity_type=args.ambiguity_type)
     tstop = time.time()
     logging.getLogger('comos').info(f"Performed motif reduction in {tstop - tstart:.2f} seconds")
     motifs_found['palindromic'] = motifs_found['motif'].apply(is_palindromic)
