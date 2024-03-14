@@ -1207,7 +1207,8 @@ def resolve_nested_motif_graph(sG, d, sa, max_motif_len, mu, sigma, fwd_metric, 
 
 def prune_combined_node(n, v, sG, d, sa, max_motif_len, mu, sigma, fwd_metric, rev_metric, aggr_fct, opt_dir, thr, ambiguity_thr, ambiguity_min_sites, ambiguity_min_tests, replace_min_enrichment, bases="AC", ambiguity_type='logo'):
     """
-    Prune node n that is the result of a motif combination of v, but test if the difference n - v passes tests and shall remain.
+    Prune node n that is the result of a motif combination of v
+    #but test if the difference n - v passes tests and shall remain.
     Also, recursively apply the same principle to nodes that were combined from n
     """
     if n not in list(sG):
@@ -1219,44 +1220,48 @@ def prune_combined_node(n, v, sG, d, sa, max_motif_len, mu, sigma, fwd_metric, r
         if u in d.index:
             # climb up the tree towards root nodes
             d = prune_combined_node(u, n, sG, d, sa, max_motif_len, mu, sigma, fwd_metric, rev_metric, aggr_fct, opt_dir, thr, ambiguity_thr, ambiguity_min_sites, ambiguity_min_tests, replace_min_enrichment, bases=bases, ambiguity_type=ambiguity_type)
-    # find the index where the combined motif u matches n
-    # TODO: pass on this information from the actual combination call
-    indices = []
-    for m in explode_motif(d.loc[n, 'motif']):
-        idx,_,_ = motif_contains(d.loc[v, 'motif'], m, d.loc[v, 'bipartite'])
-        if idx is not None:
-            indices.append(idx)
-    if len(indices) != 0:
-        assert len(set(indices)) == 1, f"Unhandled case: exploded motifs of the combined motif {d.loc[u, 'motif']} are found at different indices in  {d.loc[v, 'motif']} that it was combined from"
-        idx = indices[0]
-        diff = motif_diff(d.loc[n, 'motif'], d.loc[v, 'motif'][idx:idx+len(d.loc[n, 'motif'])], 0, subtract_matching=True)
-        aggregates, Ns = aggr_fct([diff], len(diff), fwd_metric, rev_metric, sa, bases=bases)
-        if opt_dir == "min":
-            best_aggregate = np.nanmin(aggregates[0])
-        else:
-            best_aggregate = np.nanmax(aggregates[0])
-        assert ~np.isnan(best_aggregate), f"unhandled exception: found no motif aggregate for motif {diff}"
-        if opt_dir == "min":
-            poi = np.nanargmin(aggregates[0])
-        else:
-            poi = np.nanargmax(aggregates[0])
-        N = min(Ns[0][poi], len(mu)-1)
-        stddev = (best_aggregate - mu[N]) / sigma[N]
-        passed = test_ambiguous(diff, poi, sa, max_motif_len, mu, sigma, fwd_metric, rev_metric, aggr_fct, opt_dir, ambiguity_thr, min_N=ambiguity_min_sites, min_tests=ambiguity_min_tests, bases=bases, ambiguity_type=ambiguity_type) and \
-                test_exploded(diff, poi, sa, max_motif_len, mu, sigma, fwd_metric, rev_metric, aggr_fct, opt_dir, thr, bases=bases)
-        if args.ambiguity_type == 'logo':
-            passed &= test_replace(diff, poi, sa, max_motif_len, mu, sigma, fwd_metric, rev_metric, aggr_fct, opt_dir, replace_min_enrichment, min_N=ambiguity_min_sites)
-
-        # add a new independent node if tests were passed
-        if passed:
-            new = pd.Series([diff, poi, aggregates[0][poi], Ns[0][poi], stddev, norm().cdf(stddev), True, None, False], index=d.columns)
-            if ~d.motif.eq(new.motif).any():
-                logging.info(f"Added motif {new.motif}:{poi} ({new.N}, {new.stddevs:.2f}) as difference {d.loc[n, 'motif']} - {d.loc[v, 'motif']}")
-                d.loc[d.index.max()+1] = new
-        else:
-            logging.info(f"Motif {diff} as difference {d.loc[n, 'motif']} - {d.loc[v, 'motif']} did not pass tests")
-    else:
-        logging.debug(f"no exploded motif of the combined motif {d.loc[n, 'motif']} is found in {d.loc[v, 'motif']} that it was combined from")
+    
+    ## test difference motif and potentially add it to graph
+    ## find the index where the combined motif u matches n
+    ## TODO: pass on this information from the actual combination call
+    ## TODO: in theory a nice idea, but I would need to properly integrate it into the Graph that is just being resolved
+    #indices = []
+    #for m in explode_motif(d.loc[n, 'motif']):
+    #    idx,_,_ = motif_contains(d.loc[v, 'motif'], m, d.loc[v, 'bipartite'])
+    #    if idx is not None:
+    #        indices.append(idx)
+    #if len(indices) != 0:
+    #    assert len(set(indices)) == 1, f"Unhandled case: exploded motifs of the combined motif {d.loc[u, 'motif']} are found at different indices in  {d.loc[v, 'motif']} that it was combined from"
+    #    idx = indices[0]
+    #    diff = motif_diff(d.loc[n, 'motif'], d.loc[v, 'motif'][idx:idx+len(d.loc[n, 'motif'])], 0, subtract_matching=True)
+    #    aggregates, Ns = aggr_fct([diff], len(diff), fwd_metric, rev_metric, sa, bases=bases)
+    #    if opt_dir == "min":
+    #        best_aggregate = np.nanmin(aggregates[0])
+    #    else:
+    #        best_aggregate = np.nanmax(aggregates[0])
+    #    assert ~np.isnan(best_aggregate), f"unhandled exception: found no motif aggregate for motif {diff}"
+    #    if opt_dir == "min":
+    #        poi = np.nanargmin(aggregates[0])
+    #    else:
+    #        poi = np.nanargmax(aggregates[0])
+    #    N = min(Ns[0][poi], len(mu)-1)
+    #    stddev = (best_aggregate - mu[N]) / sigma[N]
+    #    passed = test_ambiguous(diff, poi, sa, max_motif_len, mu, sigma, fwd_metric, rev_metric, aggr_fct, opt_dir, ambiguity_thr, min_N=ambiguity_min_sites, min_tests=ambiguity_min_tests, bases=bases, ambiguity_type=ambiguity_type) and \
+    #            test_exploded(diff, poi, sa, max_motif_len, mu, sigma, fwd_metric, rev_metric, aggr_fct, opt_dir, thr, bases=bases)
+    #    if args.ambiguity_type == 'logo':
+    #        passed &= test_replace(diff, poi, sa, max_motif_len, mu, sigma, fwd_metric, rev_metric, aggr_fct, opt_dir, replace_min_enrichment, min_N=ambiguity_min_sites)
+    #
+    #    # add a new independent node if tests were passed
+    #    if passed:
+    #        new = pd.Series([diff, poi, aggregates[0][poi], Ns[0][poi], stddev, norm().cdf(stddev), d.loc[n, 'bipartite'], None, False], index=d.columns)
+    #        if ~d.motif.eq(new.motif).any():
+    #            logging.info(f"Added motif {new.motif}:{poi} ({new.N}, {new.stddevs:.2f}) as difference {d.loc[n, 'motif']} - {d.loc[v, 'motif']}")
+    #            d.loc[d.index.max()+1] = new
+    #    else:
+    #        logging.info(f"Motif {diff} as difference {d.loc[n, 'motif']} - {d.loc[v, 'motif']} did not pass tests")
+    #else:
+    #    logging.debug(f"no exploded motif of the combined motif {d.loc[n, 'motif']} is found in {d.loc[v, 'motif']} that it was combined from")
+    
     # remove node n, if it is still in the graph, pruning its outgoing edges
     pruned = prune_edges(sG, list(sG.out_edges(n)), d)
     d = d.drop(pruned)
@@ -1309,6 +1314,7 @@ def resolve_combined_motif_graph(sG, d, sa, max_motif_len, mu, sigma, fwd_metric
                 for n in d.loc[d.index.isin(root_nodes) & ~pd.isna(d.rc) & (d.rc != d.index)].index:
                     # prioritize motifs with RC over those without
                     # keep RC (which is not necessarily a root node) and handle all motifs that it was combined to
+                    # TODO: currently, for the RC, no final_motif_filter is applied! Think about how to handle this
                     rc = d.loc[n, 'rc']
                     comb_nodes = [u for u,_ in sG.in_edges(rc)]
                     for u in comb_nodes:
@@ -1400,8 +1406,6 @@ def test_combine_motifs(d, i, j, sa, max_motif_len, mu, sigma, fwd_metric, rev_m
     if keep_combined:
         drop_mi, drop_mj = True, True
     else:
-        if set([i, j]) == set([729, 853]):
-            breakpoint()
         # check if any of the combined motifs is contained in one of the motifs that are being combined
         for motif in combined_motifs:
             if len(motif) <= len(d.loc[i].motif):
@@ -1427,6 +1431,39 @@ def test_combine_motifs(d, i, j, sa, max_motif_len, mu, sigma, fwd_metric, rev_m
                 else:
                     drop_mj = False
     return best, keep_combined, drop_mi, drop_mj
+
+def test_mutated_motif(mutated, d, i, sa, max_motif_len, mu, sigma, fwd_metric, rev_metric, aggr_fct, opt_dir, thr, ambiguity_thr, ambiguity_min_sites, ambiguity_min_tests, replace_min_enrichment, min_k, bases="AC", ambiguity_type='logo'):
+    idx,_,_ = motif_contains(mutated, d.loc[i].motif, d.loc[i].bipartite)
+    if mutated != d.loc[i].motif and idx is not None:
+        mutated = mutated.strip('N') # do this here in case mutated gets smaller, so that it still contains the original motif
+        aggregates, Ns = aggr_fct([mutated], len(mutated), fwd_metric, rev_metric, sa, bases=bases)
+        if opt_dir == "min":
+            best_aggregate = np.nanmin(aggregates[0])
+        else:
+            best_aggregate = np.nanmax(aggregates[0])
+        if not np.isnan(best_aggregate):
+            if opt_dir == "min":
+                poi = np.nanargmin(aggregates[0])
+            else:
+                poi = np.nanargmax(aggregates[0])
+            N = min(Ns[0][poi], len(mu)-1)
+            stddev = (best_aggregate - mu[N]) / sigma[N]
+            if stddev > d.loc[i].stddevs:
+                # check if combined motif passes tests
+                # check ambiguity (if the motif is too short)
+                if not test_ambiguous(mutated, poi, sa, max_motif_len, mu, sigma, fwd_metric, rev_metric, aggr_fct, opt_dir, ambiguity_thr, min_N=ambiguity_min_sites, min_tests=ambiguity_min_tests, bases=bases, ambiguity_type=ambiguity_type):
+                    logging.getLogger('comos').info(f'ambiguous test failed for mutated motif {mutated}')
+                    return False, poi, aggregates[0], Ns[0][poi], stddev
+                # test if all exploded, canonical motifs of the combined motif are above the selection threshold
+                if not test_exploded(mutated, poi, sa, max_motif_len, mu, sigma, fwd_metric, rev_metric, aggr_fct, opt_dir, thr, bases=bases):
+                    logging.getLogger('comos').info(f'exploded motif test failed for mutated motif {mutated}')
+                    return False, poi, aggregates[0], Ns[0][poi], stddev
+                if ambiguity_type == 'logo':
+                    if not test_replace(mutated, poi, sa, max_motif_len, mu, sigma, fwd_metric, rev_metric, aggr_fct, opt_dir, replace_min_enrichment, min_N=ambiguity_min_sites):
+                        logging.getLogger('comos').info(f'replace test failed for mutated motif {mutated}')
+                        return False, poi, aggregates[0], Ns[0][poi], stddev
+                return True, poi, aggregates[0], Ns[0][poi], stddev
+    return False, None, None, None, None
 
 def reduce_motifs(d, sa, max_motif_len, mu, sigma, fwd_metric, rev_metric, aggr_fct, opt_dir, thr, ambiguity_thr, ambiguity_min_sites, ambiguity_min_tests, replace_min_enrichment, min_k, bases="AC", ambiguity_type='logo'):
     d = d.copy().sort_values(['N','stddevs'], ascending=[False,True])
@@ -1629,47 +1666,43 @@ def reduce_motifs(d, sa, max_motif_len, mu, sigma, fwd_metric, rev_metric, aggr_
                 tested.add(d.loc[i].motif)
                 mutated, probs = mutate_replace(d.loc[i].motif, d.loc[i].poi, sa, len(d.loc[i].motif), mu, sigma, fwd_metric, rev_metric, aggr_fct, opt_dir, min_N=ambiguity_min_sites)
                 mutated = "".join([b if p >= 0.9 else o for o,b,p in zip(d.loc[i].motif, mutated, probs)])
-                idx,_,_ = motif_contains(mutated, d.loc[i].motif, d.loc[i].bipartite)
-                if mutated != d.loc[i].motif and idx is not None:
-                    mutated = mutated.strip('N') # do this here in case mutated gets smaller, so that it still contains the original motif
-                    aggregates, Ns = aggr_fct([mutated], len(mutated), fwd_metric, rev_metric, sa, bases=bases)
-                    if opt_dir == "min":
-                        best_aggregate = np.nanmin(aggregates[0])
+                passes, poi, val, N, stddev = test_mutated_motif(mutated, d, i, sa, max_motif_len, mu, sigma, fwd_metric, rev_metric, aggr_fct, opt_dir, thr, ambiguity_thr, ambiguity_min_sites, ambiguity_min_tests, replace_min_enrichment, min_k, bases=bases, ambiguity_type=ambiguity_type)
+                if passes:
+                    # add to df
+                    new = pd.Series([mutated, poi, val, N, stddev, norm().cdf(stddev), d.loc[i].bipartite, None], index=d.columns)
+                    if ~d.motif.eq(new.motif).any():
+                        new_index = d.index.max()+1
+                        d.loc[new_index] = new
+                        logging.getLogger('comos').info(f"add new mutated motif {new.motif} based on  {d.loc[i].motif}")
                     else:
-                        best_aggregate = np.nanmax(aggregates[0])
-                    if not np.isnan(best_aggregate):
-                        if opt_dir == "min":
-                            poi = np.nanargmin(aggregates[0])
+                        new_index = d.loc[d.motif.eq(new.motif)].index[0]
+                    if new_index != i:
+                        G.add_edge(new_index, i)
+                    
+                    # check and add RC
+                    # it is not unlikely that the RC would not mutate to the same sequence,
+                    # therefore check it here specifically instead of trusting it does.
+                    # otherwise the unmutated sequence will be prioritized during resolving the combined graph
+                    # TODO: exploded test or not? (see THAF100: RC GYAGNNNNNNGTA fails, but TACNNNNNNCTRC is clearly modified in both locations)
+                    if d.loc[i].rc and d.loc[i].rc != i:
+                        rc = d.loc[i].rc
+                        mutated_rc = reverse_complement(mutated)
+                        passes, poi, val, N, stddev = test_mutated_motif(mutated_rc, d, rc, sa, max_motif_len, mu, sigma, fwd_metric, rev_metric, aggr_fct, opt_dir, thr, ambiguity_thr, ambiguity_min_sites, ambiguity_min_tests, replace_min_enrichment, min_k, bases=bases, ambiguity_type=ambiguity_type)
+                        if passes:
+                            # add to df
+                            new = pd.Series([mutated_rc, poi, val, N, stddev, norm().cdf(stddev), d.loc[rc].bipartite, None], index=d.columns)
+                            if ~d.motif.eq(new.motif).any():
+                                new_index = d.index.max()+1
+                                d.loc[new_index] = new
+                                logging.getLogger('comos').info(f"add new mutated motif {new.motif} based on  {d.loc[rc].motif}, the RC of {d.loc[i].motif}")
+                            else:
+                                new_index = d.loc[d.motif.eq(new.motif)].index[0]
+                            if new_index != rc:
+                                G.add_edge(new_index, rc)
                         else:
-                            poi = np.nanargmax(aggregates[0])
-                        N = min(Ns[0][poi], len(mu)-1)
-                        stddev = (best_aggregate - mu[N]) / sigma[N]
-                        if stddev > d.loc[i].stddevs:
-                            # check if combined motif passes tests
-                            passes = True
-                            # check ambiguity (if the motif is too short)
-                            if not test_ambiguous(mutated, poi, sa, max_motif_len, mu, sigma, fwd_metric, rev_metric, aggr_fct, opt_dir, ambiguity_thr, min_N=ambiguity_min_sites, min_tests=ambiguity_min_tests, bases=bases, ambiguity_type=ambiguity_type):
-                                logging.getLogger('comos').info(f'ambiguous test failed for mutated motif {mutated}')
-                                passes = False
-                            # test if all exploded, canonical motifs of the combined motif are above the selection threshold
-                            if passes and not test_exploded(mutated, poi, sa, max_motif_len, mu, sigma, fwd_metric, rev_metric, aggr_fct, opt_dir, thr, bases=bases):
-                                logging.getLogger('comos').info(f'exploded motif test failed for mutated motif {mutated}')
-                                passes = False
-                            if passes and ambiguity_type == 'logo':
-                                if not test_replace(mutated, poi, sa, max_motif_len, mu, sigma, fwd_metric, rev_metric, aggr_fct, opt_dir, replace_min_enrichment, min_N=ambiguity_min_sites):
-                                    logging.getLogger('comos').info(f'replace test failed for mutated motif {mutated}')
-                                    passes = False
-                            if passes:
-                                # add to df
-                                new = pd.Series([mutated, poi, aggregates[0][poi], Ns[0][poi], stddev, norm().cdf(stddev), True, i], index=d.columns)
-                                if ~d.motif.eq(new.motif).any():
-                                    new_index = d.index.max()+1
-                                    d.loc[new_index] = new
-                                    logging.getLogger('comos').info(f"add new mutated node {new.motif} based on  {d.loc[i].motif}")
-                                else:
-                                    new_index = d.loc[d.motif.eq(new.motif)].index[0]
-                                if new_index != i:
-                                    G.add_edge(new_index, i)
+                            logging.getLogger('comos').info(f"mutated motif {mutated_rc}, the RC of mutated motif {mutated}, failed to pass")
+
+
 
             for j in d.loc[i+1:].index:
                 if d.loc[i].bipartite != d.loc[j].bipartite:
@@ -1679,8 +1712,6 @@ def reduce_motifs(d, sa, max_motif_len, mu, sigma, fwd_metric, rev_metric, aggr_
                 tested.add((d.loc[i].motif, d.loc[j].motif))
 
                 best, keep_combined, drop_mi, drop_mj = test_combine_motifs(d, i, j, sa, max_motif_len, mu, sigma, fwd_metric, rev_metric, aggr_fct, opt_dir, thr, ambiguity_thr, ambiguity_min_sites, ambiguity_min_tests, replace_min_enrichment, min_k, bases=bases, ambiguity_type=ambiguity_type)
-                if set([i, j]) == set([729, 853]):
-                    breakpoint()
                 if keep_combined:
                     new = pd.Series(best+[None], index=d.columns)
                     if ~d.motif.eq(new.motif).any():
