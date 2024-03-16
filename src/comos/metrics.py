@@ -4,7 +4,8 @@ import pandas as pd
 import numpy as np
 
 def compute_expsumlogp(
-        df, seq, min_cov, window, min_window_values, subtract_background=False):
+        df, seq, min_cov, window, min_window_values, 
+        subtract_background=False):
     fwd_logp = np.full(len(seq), np.nan)
     sel = (
         (df.dir == 'fwd') & 
@@ -64,7 +65,8 @@ def compute_diffs(df, seq, min_cov=10):
     return fwd_diff, rev_diff
 
 def compute_meanabsdiff(
-        df, seq, min_cov, window, min_window_values, subtract_background=False):
+        df, seq, min_cov, window, min_window_values, 
+        subtract_background=False):
     fwd_diff, rev_diff = compute_diffs(df, seq, min_cov=min_cov)
     fwd_mean_abs_diff = pd.Series(np.abs(fwd_diff)).rolling(
         window, center=True, min_periods=min_window_values).mean()
@@ -94,7 +96,8 @@ def compute_meanabsdiff(
             rev_mean_abs_diff)
 
 def compute_meanfrac(
-        df, seq, min_cov, window, min_window_values, subtract_background=False):
+        df, seq, min_cov, window, min_window_values, 
+        subtract_background=False):
     df = df.reset_index().sort_values("fracmod", ascending=False)
     df = df.groupby(
         ['position', 'dir'], as_index=False).first().set_index('position')

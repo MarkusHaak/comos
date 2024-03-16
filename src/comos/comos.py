@@ -536,8 +536,8 @@ def recursively_remove_combined(
     #           fwd_metric, rev_metric, aggr_fct, opt_dir, thr, bases=bases))
     #    if args.ambiguity_type == 'logo':
     #        passed &= test_replace(
-    #           diff, poi, sa, max_motif_len, mu, sigma, fwd_metric, rev_metric, 
-    #           aggr_fct, opt_dir, replace_min_enrichment, 
+    #           diff, poi, sa, max_motif_len, mu, sigma, fwd_metric, 
+    #           rev_metric, aggr_fct, opt_dir, replace_min_enrichment, 
     #           min_N=ambiguity_min_sites)
     #
     #    # add a new independent node if tests were passed
@@ -730,7 +730,8 @@ def score_motifs(
         df.loc[sel, 'poi'] = np.nanargmin(aggregates[sel], axis=1)
     else:
         df.loc[sel, 'poi'] = np.nanargmax(aggregates[sel], axis=1)
-    df.loc[sel, 'N'] = Ns[sel][range(sel.sum()), df.loc[sel, 'poi'].astype(int)]
+    df.loc[sel, 'N'] = Ns[sel][
+        range(sel.sum()), df.loc[sel, 'poi'].astype(int)]
     df.loc[sel, 'Nclip'] = np.clip(df.loc[sel, 'N'], 1, len(mu)-1)
     df.loc[sel, 'stddevs'] = (
         (df.loc[sel, 'val'] - mu[df.loc[sel, 'Nclip'].astype(int)]) / 
@@ -764,9 +765,10 @@ def test_motifs(
     return df
 
 def combine_and_test_motifs(
-        d, i, j, sa, max_motif_len, mu, sigma, fwd_metric, rev_metric, aggr_fct, 
-        opt_dir, thr, ambiguity_thr, ambiguity_min_sites, ambiguity_min_tests, 
-        replace_min_enrichment, min_k, bases="AC", ambiguity_type='logo'):
+        d, i, j, sa, max_motif_len, mu, sigma, fwd_metric, rev_metric, 
+        aggr_fct, opt_dir, thr, ambiguity_thr, ambiguity_min_sites, 
+        ambiguity_min_tests, replace_min_enrichment, min_k, bases="AC", 
+        ambiguity_type='logo'):
     combined_motifs = [
         m for m in combine_motifs(d.loc[i].motif, d.loc[j].motif) 
         if len(m) > min_k]
@@ -874,8 +876,8 @@ def reduce_motifs(
     # initial filtering
     d['pass'] = d.apply(lambda row: test_ambiguous(
         row.motif, row.poi, sa, max_motif_len, mu, sigma, fwd_metric, 
-        rev_metric, aggr_fct, opt_dir, ambiguity_thr, min_N=ambiguity_min_sites, 
-        min_tests=ambiguity_min_tests, bases=bases, 
+        rev_metric, aggr_fct, opt_dir, ambiguity_thr, 
+        min_N=ambiguity_min_sites, min_tests=ambiguity_min_tests, bases=bases, 
         ambiguity_type=ambiguity_type), axis=1)
     if ambiguity_type == 'logo':
         d.loc[d['pass'] == True, 'pass'] = d.loc[d['pass'] == True].apply(
@@ -945,8 +947,8 @@ def reduce_motifs(
             aggr_fct, opt_dir, thr, ambiguity_thr, bases=bases)
     for sG in bipartite_sGs:
         # search contiguous motifs in biparite motifs and remove all hits
-        # TODO: instead do tests on half of motif that is not modified to check 
-        # if bases can be ambiguous
+        # TODO: instead do tests on half of motif that is not modified 
+        # to check if bases can be ambiguous
         for i,_ in d.loc[~d.bipartite].iterrows():
             changed = True
             seen = set()
@@ -1063,15 +1065,16 @@ def reduce_motifs(
             else:
                 # check again if RC is sufficiently methylated 
                 # (but was later filtered in resolving the nested graph)
-                # no need to check for ambiguity, since for bipartite motifs 
-                # it suffices if one of two RCs passes
+                # no need to check for ambiguity, since for bipartite 
+                # motifs it suffices if one of two RCs passes
                 motif = reverse_complement(d.loc[i].motif)
                 scores_df = score_motifs(
                     [motif], max_motif_len, fwd_metric, rev_metric, sa, 
                     aggr_fct, opt_dir, mu, sigma, bases=bases)
                 if opt_dir == "min":
                     scores_df = scores_df.loc[scores_df['stddevs'] <= thr]
-                    scores_df = scores_df.sort_values('stddevs', ascending=True)
+                    scores_df = scores_df.sort_values(
+                        'stddevs', ascending=True)
                 else:
                     scores_df = scores_df.loc[scores_df['stddevs'] >= thr]
                     scores_df = scores_df.sort_values(
@@ -1080,9 +1083,9 @@ def reduce_motifs(
                     new = test_motifs(
                         scores_df.iloc[[0]], sa, max_motif_len, mu, sigma, 
                         fwd_metric, rev_metric, aggr_fct, opt_dir, thr, 
-                        ambiguity_thr, ambiguity_min_sites, ambiguity_min_tests, 
-                        replace_min_enrichment, bases=bases, 
-                        ambiguity_type=ambiguity_type)
+                        ambiguity_thr, ambiguity_min_sites, 
+                        ambiguity_min_tests, replace_min_enrichment, 
+                        bases=bases, ambiguity_type=ambiguity_type)
                     new = new.iloc[0]
                     # add to df
                     new['bipartite'] = True
@@ -1150,12 +1153,13 @@ def reduce_motifs(
                     
                     # check and add RC
                     # it is not unlikely that the RC would not mutate to 
-                    # the same sequence, therefore check it here specifically 
-                    # instead of trusting it does.
-                    # otherwise the unmutated sequence will be prioritized 
-                    # during resolving the combined graph
-                    # TODO: exploded test or not? (see THAF100: RC GYAGNNNNNNGTA 
-                    # fails, but TACNNNNNNCTRC is clearly modified in both 
+                    # the same sequence, therefore check it here 
+                    # specifically instead of trusting it does.
+                    # otherwise the unmutated sequence will be 
+                    # prioritized during resolving the combined graph
+                    # TODO: exploded test or not? (see THAF100: 
+                    # RC GYAGNNNNNNGTA fails, but TACNNNNNNCTRC is 
+                    # clearly modified in both 
                     # locations)
                     if d.loc[i].rc and d.loc[i].rc != i:
                         rc = d.loc[i].rc
@@ -1305,7 +1309,8 @@ def reduce_motifs(
     return d.sort_values('stddevs').reset_index(drop=True)
 
 def find_methylated_motifs(
-        all_canon_motifs, fwd_metric, rev_metric, sa, res_dir, contig_id, args):
+        all_canon_motifs, fwd_metric, rev_metric, sa, res_dir, contig_id, 
+        args):
     if args.metric == "expsumlogp":
         opt_dir = "min"
         selection_thr = -args.selection_thr
@@ -1333,8 +1338,8 @@ def find_methylated_motifs(
             aggr_metric, aggr_metric_counts = pickle.load(f)
         tstop = time.time()
         logging.getLogger('comos').info(
-            f"Loaded canonical motif scores from cache in {tstop - tstart:.2f} "
-            f"seconds")
+            f"Loaded canonical motif scores from cache in "
+            f"{tstop - tstart:.2f} seconds")
     else:
         tstart = time.time()
         aggr_metric, aggr_metric_counts = aggr_fct(
@@ -1446,7 +1451,8 @@ def find_methylated_motifs(
     logging.getLogger('comos').info(
         f"Selected {sel.sum():,} motifs based on selection threshold of "
         f"{selection_thr} std. deviations.")
-    print(results.loc[sel].sort_values('stddevs', ascending=(opt_dir == "min")))
+    print(results.loc[sel].sort_values(
+        'stddevs', ascending=(opt_dir == "min")))
     if sel.sum() == 0:
         logging.getLogger('comos').warning(
             "No motifs found given the current set of parameters.")
@@ -1545,9 +1551,9 @@ def main():
         f"{sum([len(canon_motifs[i]) for i in canon_motifs]):,} "
         f"indices within these motifs")
     logging.getLogger('comos').info(
-        f"Using {args.metric} metric with {args.aggregate} aggregation of site "
-        f"metrics over {args.window} nt windows (min {args.min_window_values} "
-        f"per window)"
+        f"Using {args.metric} metric with {args.aggregate} aggregation of "
+        f"site metrics over {args.window} nt windows (min "
+        f"{args.min_window_values} per window)"
         f"{', with background substr.' if args.subtract_background else ''}")
 
     if args.metagenome:

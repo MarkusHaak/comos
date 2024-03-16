@@ -129,7 +129,8 @@ def motif_diff(m1, m2, m2_idx, subtract_matching=False):
                             break
             else:
                 # use m1 bases at overlap positions. 
-                # These might not be identical to m2, e.g. ASST instead of ACGT
+                # These might not be identical to m2, 
+                # e.g. ASST instead of ACGT
                 diff.append(m1[i])
     return "".join(diff).strip('N')
 

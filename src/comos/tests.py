@@ -196,8 +196,8 @@ def test_ambiguous_logo(
                     else:
                         best_aggregate = np.nanmax(aggregates[0])
                     assert ~np.isnan(best_aggregate), \
-                        f"""unhandled exception: found no motif 
-                        aggregate for motif {diff}"""
+                        f"unhandled exception: found no motif "+\
+                        f"aggregate for motif {diff}"
                     if opt_dir == "min":
                         poi_rc = np.nanargmin(aggregates[0])
                     else:
