@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.pytest.ini_options]
+addopts = [
+    "--import-mode=importlib",
+]
+
+[project]
+name = "comos"
+version = "0.1.0"
+description = "Complete Motif Search"
+authors = [
+  { name = "Markus Haak", email = "markus.haak@posteo.de" },
+]
+license = { file = "LICENSE" }
+readme = "README.md"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)",
+    "Operating System :: OS Independent",
+]
+requires-python = ">=3.8"
+dependencies = ["pytest", "numpy", "pandas", "scipy", "networkx", "Biopython", "sanamos", "pyreadr"]
+
+[project.scripts]
+comos = "comos.comos:main"
+
+[project.urls]
+Homepage = "https://github.com/MarkusHaak/comos.git"
