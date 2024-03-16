@@ -47,10 +47,10 @@ def parse_args():
     io_grp.add_argument(
         '--mod', 
         required=True,
-        help='''File containing modification information, 
-        either an RDS Rdata file (.RDS) created with Nanodisco, 
-        a bedMethyl file (.bed) from modkit or 
-        the common prefix of tombo text-output files.''')
+        help='File containing modification information, '
+             'either an RDS Rdata file (.RDS) created with Nanodisco, '
+             'a bedMethyl file (.bed) from modkit or '
+             'the common prefix of tombo text-output files.')
     io_grp.add_argument(
         '--out', '-o', 
         default='./comos_output',
@@ -94,7 +94,7 @@ def parse_args():
     motif_grp.add_argument(
         '--bases',
         default="AC",
-        help=("Canonical bases that are considered as "+ 
+        help=("Canonical bases that are considered as " 
               "potentially modified.")
     )
 
@@ -103,7 +103,7 @@ def parse_args():
         '--min-cov',
         type=int,
         default=10,
-        help=("Minimum coverage for a genomic position to be "+ 
+        help=("Minimum coverage for a genomic position to be " 
               "considered in the analysis.")
     )
     hyper_grp.add_argument(
@@ -116,7 +116,7 @@ def parse_args():
         '--window',
         type=int,
         default=5,
-        help=("Sequence window size around analyzed motif "+
+        help=("Sequence window size around analyzed motif "
               "position used for calculating the motif metric.")
     )
     hyper_grp.add_argument(
@@ -128,8 +128,8 @@ def parse_args():
     hyper_grp.add_argument(
         '--subtract-background',
         action="store_true",
-        help=("Compute background based on adjacent windows "+
-              "to the left and right of the window and substract "+
+        help=("Compute background based on adjacent windows "
+              "to the left and right of the window and substract "
               "the more conservative from metric values.")
     )
     hyper_grp.add_argument(
@@ -142,7 +142,7 @@ def parse_args():
         '--selection-thr',
         type=float,
         default=4.0,
-        help=("Minimum diversion from Null-model in number of "+
+        help=("Minimum diversion from Null-model in number of "
               "std.dev. required for a motif to get selected.")
     )
     hyper_grp.add_argument(
@@ -155,22 +155,22 @@ def parse_args():
         '--ambiguity-thr',
         type=float,
         default=3.0,
-        help=("Minimum diversion from Null-model in number of "+
+        help=("Minimum diversion from Null-model in number of "
               "std.dev. required for an extended motif.")
     )
     hyper_grp.add_argument(
         '--ambiguity-min-sites',
         type=float,
         default=10,
-        help=("Minimum coverage required to consider a motif "+
+        help=("Minimum coverage required to consider a motif "
               "in ambiguity testing.")
     )
     hyper_grp.add_argument(
         '--ambiguity-min-tests',
         type=int,
         default=2,
-        help=("Minimum number of test cases per ambiguous "+
-              "position (1-4) with sufficient sites, otherwise "+ 
+        help=("Minimum number of test cases per ambiguous "
+              "position (1-4) with sufficient sites, otherwise " 
               "test fails.")
     )
     hyper_grp.add_argument(
@@ -183,8 +183,8 @@ def parse_args():
         '--outlier-iqr',
         type=float,
         default=0.0,
-        help=("Datapoints outside median +- <outlier-iqr> * IQR "+
-              "are considered outliers when calculating background "+ 
+        help=("Datapoints outside median +- <outlier-iqr> * IQR "
+              "are considered outliers when calculating background " 
               "model. Disable outlier detection with value <= 0.0.")
     )
 
@@ -197,14 +197,14 @@ def parse_args():
     misc_grp.add_argument(
         '--metagenome',
         action="store_true",
-        help=("Analyze contigs in the input fasta individually "+
+        help=("Analyze contigs in the input fasta individually "
               "for MTase motifs.")
     )
     misc_grp.add_argument(
         '--min-seq-len',
         type=int,
         default=200_000,
-        help=("Minimum length of contigs in the Multiple-Fasta "+
+        help=("Minimum length of contigs in the Multiple-Fasta "
               "to be perform an initial motif search on them.")
     )
 
