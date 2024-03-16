@@ -24,7 +24,8 @@ class ArgHelpFormatter(argparse.HelpFormatter):
 def parse_rds_file(fp):
     df = pyreadr.read_r(fp)[None]
     # correct positions
-    df['position'] = df['position'].astype(int) - 1 + 3 # convert to 0-based indexing
+    # convert to 0-based indexing
+    df['position'] = df['position'].astype(int) - 1 + 3 
     df.loc[df.dir == 'rev', 'position'] += 1
     df = df.set_index(df.position)
     return df
@@ -35,7 +36,11 @@ def parse_bed_file(fp):
         sep='\s+', 
         header=None, 
         usecols=[0,1,3,5,9,10,11,12,13,14,15,16,17], 
-        names=['contig', 'position', 'modbase', 'strand', 'cov', 'fracmod', 'Nmod', 'Ncan', 'Nother', 'Ndel', 'Nfail', 'Ndiff', 'Nnocall'])
+        names=[
+            'contig', 'position', 'modbase', 
+            'strand', 'cov', 'fracmod', 'Nmod', 
+            'Ncan', 'Nother', 'Ndel', 'Nfail', 
+            'Ndiff', 'Nnocall'])
     df['position'] = df['position'].astype(int)
     df = df.set_index('position', drop=True)
     df['dir'] = None
@@ -53,15 +58,30 @@ def parse_tombo_files(prefix):
             contig = d.columns[0]
             d['contig'] = contig
             d['dir'] = strand
-            d = d.rename(columns={"span=1":col_name, contig:"position"}).sort_values('position').set_index(['contig', 'dir', 'position'], )
+            d = d.rename(
+                    columns={"span=1":col_name, contig:"position"}
+                ).sort_values('position').set_index(
+                    ['contig', 'dir', 'position'])
             dfs.append(d)
         return pd.concat(dfs)
 
     dirname = os.path.dirname(prefix)
-    cov_fwd_fn = [os.path.join(dirname, fn) for fn in os.listdir(dirname) if fn.startswith(os.path.basename(prefix)) and fn.endswith('.valid_coverage.plus.wig')][0]
-    cov_rev_fn = [os.path.join(dirname, fn) for fn in os.listdir(dirname) if fn.startswith(os.path.basename(prefix)) and fn.endswith('.valid_coverage.minus.wig')][0]
-    frac_fwd_fn = [os.path.join(dirname, fn) for fn in os.listdir(dirname) if fn.startswith(os.path.basename(prefix)) and fn.endswith('.dampened_fraction_modified_reads.plus.wig')][0]
-    frac_rev_fn = [os.path.join(dirname, fn) for fn in os.listdir(dirname) if fn.startswith(os.path.basename(prefix)) and fn.endswith('.dampened_fraction_modified_reads.minus.wig')][0]
+    cov_fwd_fn = [
+        os.path.join(dirname, fn) for fn in os.listdir(dirname) 
+        if (fn.startswith(os.path.basename(prefix)) and 
+            fn.endswith('.valid_coverage.plus.wig'))][0]
+    cov_rev_fn = [
+        os.path.join(dirname, fn) for fn in os.listdir(dirname) 
+        if (fn.startswith(os.path.basename(prefix)) and 
+            fn.endswith('.valid_coverage.minus.wig'))][0]
+    frac_fwd_fn = [
+        os.path.join(dirname, fn) for fn in os.listdir(dirname) 
+        if (fn.startswith(os.path.basename(prefix)) and 
+            fn.endswith('.dampened_fraction_modified_reads.plus.wig'))][0]
+    frac_rev_fn = [
+        os.path.join(dirname, fn) for fn in os.listdir(dirname) 
+        if (fn.startswith(os.path.basename(prefix)) and 
+            fn.endswith('.dampened_fraction_modified_reads.minus.wig'))][0]
     
     
     dfs = []
@@ -87,7 +107,8 @@ def parse_largest_contig(fp, cache_dir='tmp'):
             contig_id = record.id
             n_largest = len(record.seq)
             seq = record.seq
-            sa = sanamos.get_suffix_array(record.id, record.seq, cache_dir=cache_dir)
+            sa = sanamos.get_suffix_array(
+                record.id, record.seq, cache_dir=cache_dir)
     return seq, sa, contig_id, n
 
 def parse_contigs(fp):

@@ -61,9 +61,12 @@ def motif_contains(m1, m2, bipartite=True):
     """
     Checks if IUPAC motif m2 is identically contained in IUPAC motif m1.
     Returns a tuple (idx, ident, diff), where
-    idx : first index of m2 in m1 if m1 is contained in m2 and None if it is not contained
-    ident : True if the substring of m1 at idx of length len(m2) is identical to m2
-    diff : non-identical positions between m1 and m2 relative to m2 if m2 is contained in m1
+    idx : first index of m2 in m1 if m1 is contained in m2 and None if 
+        it is not contained
+    ident : True if the substring of m1 at idx of length len(m2) is 
+        identical to m2
+    diff : non-identical positions between m1 and m2 relative to m2 if m2 is 
+        contained in m1
     
     Examples:
     ATC is identically contained in CATC at index 1, diff=[-1]
